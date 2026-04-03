@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::{Duration, Instant};
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use tracing::{debug, info, warn};
@@ -15,7 +14,7 @@ use crate::writer::crop_video_async;
 enum CropDialog {
     Hidden,
     Confirm { region: [u32; 4] },
-    /// ffmpeg is running; we keep the output path here so Done can show it.
+    /// ffmpeg is running.
     Exporting { region: [u32; 4], output: PathBuf },
     Done { output: PathBuf },
     Failed { message: String },
@@ -27,10 +26,9 @@ pub struct App {
     file_path: Option<PathBuf>,
     texture: Option<TextureHandle>,
     frame_rx: Option<Receiver<Option<VideoFrame>>>,
-    lookahead: Option<VideoFrame>,
-    play_start: Option<Instant>,
-    paused_at: Option<f64>,
     playing: bool,
+    /// PTS of the last displayed frame (seconds); used only for the time readout.
+    current_pts: f64,
     error: Option<String>,
 
     // Real-time motion analysis (during playback).
@@ -42,6 +40,9 @@ pub struct App {
     // Full-video background analysis.
     analysis_rx: Option<Receiver<Option<[u32; 4]>>>,
     final_region: Option<[u32; 4]>,
+    /// Set when playback finishes before analysis; dialog is shown once
+    /// the analysis result arrives.
+    waiting_to_show_dialog: bool,
     crop_dialog: CropDialog,
     export_rx: Option<Receiver<Result<(), String>>>,
 }
@@ -52,10 +53,8 @@ impl App {
             file_path: None,
             texture: None,
             frame_rx: None,
-            lookahead: None,
-            play_start: None,
-            paused_at: None,
             playing: false,
+            current_pts: 0.0,
             error: None,
             motion_analyzer: MotionAnalyzer::default(),
             variance_threshold: 5.0,
@@ -63,6 +62,7 @@ impl App {
             apply_crop: false,
             analysis_rx: None,
             final_region: None,
+            waiting_to_show_dialog: false,
             crop_dialog: CropDialog::Hidden,
             export_rx: None,
         }
@@ -81,91 +81,87 @@ impl App {
 
         self.file_path = Some(path);
         self.frame_rx = Some(rx);
-        self.lookahead = None;
-        self.play_start = Some(Instant::now());
-        self.paused_at = None;
         self.playing = true;
+        self.current_pts = 0.0;
         self.texture = None;
         self.error = None;
         self.motion_analyzer.reset();
         self.active_region = None;
         self.analysis_rx = Some(analysis_rx);
         self.final_region = None;
+        self.waiting_to_show_dialog = false;
         self.crop_dialog = CropDialog::Hidden;
         self.export_rx = None;
     }
 
-    fn video_time(&self) -> f64 {
-        match self.paused_at {
-            Some(t) => t,
-            None => self.play_start.map_or(0.0, |s| s.elapsed().as_secs_f64()),
-        }
-    }
-
     fn toggle_play_pause(&mut self) {
+        self.playing = !self.playing;
         if self.playing {
-            let t = self.video_time();
-            self.paused_at = Some(t);
-            self.playing = false;
-            info!(at_secs = t, "playback paused");
-        } else if let Some(paused) = self.paused_at.take() {
-            self.play_start = Some(Instant::now() - Duration::from_secs_f64(paused));
-            self.playing = true;
-            info!(from_secs = paused, "playback resumed");
+            info!(from_pts = self.current_pts, "playback resumed");
+        } else {
+            info!(at_pts = self.current_pts, "playback paused");
         }
     }
 
+    // ── Frame polling ────────────────────────────────────────────────────────
+
+    /// Drain the decode channel on every repaint.
+    ///
+    /// All available frames are consumed; only the latest is displayed so the
+    /// video plays as fast as the decoder and screen refresh allow, skipping
+    /// intermediate frames freely.
     fn poll_frames(&mut self, ctx: &egui::Context) {
         if !self.playing {
             return;
         }
-        let now = self.video_time();
         let rx = match &self.frame_rx {
             Some(rx) => rx,
             None => return,
         };
 
         let mut latest: Option<VideoFrame> = None;
-
-        if let Some(frame) = self.lookahead.take() {
-            if frame.pts_secs <= now {
-                latest = Some(frame);
-            } else {
-                self.lookahead = Some(frame);
-                if let Some(f) = latest {
-                    self.upload_frame(ctx, f);
-                }
-                return;
-            }
-        }
+        let mut ended = false;
 
         loop {
             match rx.try_recv() {
                 Ok(Some(frame)) => {
-                    if frame.pts_secs <= now {
-                        latest = Some(frame);
-                    } else {
-                        self.lookahead = Some(frame);
-                        break;
-                    }
+                    latest = Some(frame); // keep draining; skip intermediate frames
                 }
                 Ok(None) => {
-                    self.playing = false;
-                    self.paused_at = Some(now);
-                    info!("playback ended");
+                    ended = true;
                     break;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     warn!("decoder thread disconnected unexpectedly");
-                    self.playing = false;
+                    ended = true;
                     break;
                 }
             }
         }
 
-        if let Some(f) = latest {
-            self.upload_frame(ctx, f);
+        if let Some(frame) = latest {
+            self.current_pts = frame.pts_secs;
+            self.upload_frame(ctx, frame);
+        }
+
+        if ended {
+            self.playing = false;
+            self.on_playback_ended();
+        } else {
+            // Ask for another repaint immediately so we keep consuming frames
+            // as fast as the decoder produces them.
+            ctx.request_repaint();
+        }
+    }
+
+    fn on_playback_ended(&mut self) {
+        info!(final_pts = self.current_pts, "playback ended");
+        if let Some(region) = self.final_region {
+            self.crop_dialog = CropDialog::Confirm { region };
+        } else {
+            // Analysis is still running; show the dialog once it delivers.
+            self.waiting_to_show_dialog = true;
         }
     }
 
@@ -189,14 +185,20 @@ impl App {
         }
     }
 
+    // ── Background channel polling ───────────────────────────────────────────
+
     fn poll_analysis(&mut self) {
         let Some(rx) = &self.analysis_rx else { return };
         if let Ok(result) = rx.try_recv() {
             info!(region = ?result, "background analysis complete");
             self.final_region = result;
             self.analysis_rx = None;
-            if let Some(region) = result {
-                self.crop_dialog = CropDialog::Confirm { region };
+            // If playback has already ended, show the dialog now.
+            if self.waiting_to_show_dialog {
+                self.waiting_to_show_dialog = false;
+                if let Some(region) = result {
+                    self.crop_dialog = CropDialog::Confirm { region };
+                }
             }
         }
     }
@@ -205,7 +207,6 @@ impl App {
         let Some(rx) = &self.export_rx else { return };
         if let Ok(result) = rx.try_recv() {
             self.export_rx = None;
-            // Extract the output path from the current Exporting state.
             let output = match &self.crop_dialog {
                 CropDialog::Exporting { output, .. } => output.clone(),
                 _ => PathBuf::new(),
@@ -236,18 +237,18 @@ impl App {
         }
         let mut action: Option<Action> = None;
 
-        egui::Window::new("Active Region")
+        egui::Window::new("Active Region Detected")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| match &self.crop_dialog {
                 CropDialog::Confirm { region } => {
                     let [x, y, w, h] = *region;
-                    ui.label("Full-video analysis found the most active region:");
+                    ui.label("The most active region across the full video:");
                     ui.monospace(format!("  {w} × {h}  at  ({x}, {y})"));
                     ui.add_space(6.0);
-                    ui.label("Write a new video file cropped to this rectangle?");
-                    ui.small("All frames will be included — no frames are skipped in the output.");
+                    ui.label("Crop the video to this rectangle?");
+                    ui.small("All frames are written to the output — none are skipped.");
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         if ui.button("Save Cropped Video…").clicked() {
@@ -314,15 +315,11 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.playing {
-            ctx.request_repaint();
-        }
-
         self.poll_frames(ctx);
         self.poll_analysis();
         self.poll_export();
 
-        // Repaint while export is in progress.
+        // Keep repainting while export spinner is shown.
         if self.export_rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -370,7 +367,7 @@ impl eframe::App for App {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let t = self.video_time();
+                    let t = self.current_pts;
                     let m = (t / 60.0) as u64;
                     let s = t % 60.0;
                     ui.monospace(format!("{m:02}:{s:05.2}"));
@@ -436,37 +433,37 @@ impl eframe::App for App {
             };
 
             let scale = (avail.width() / effective.x).min(avail.height() / effective.y);
-            let disp_size = effective * scale;
-            let disp_rect = egui::Rect::from_center_size(avail.center(), disp_size);
+            let disp_rect =
+                egui::Rect::from_center_size(avail.center(), effective * scale);
 
             let painter = ui.painter();
             painter.image(texture.id(), disp_rect, uv, egui::Color32::WHITE);
 
             if !self.apply_crop {
-                let sx = disp_size.x / full_size.x;
-                let sy = disp_size.y / full_size.y;
+                let sx = disp_rect.width() / full_size.x;
+                let sy = disp_rect.height() / full_size.y;
 
-                let overlay_rect = |rx: u32, ry: u32, rw: u32, rh: u32| {
+                let overlay = |rx: u32, ry: u32, rw: u32, rh: u32| {
                     egui::Rect::from_min_size(
                         disp_rect.min + egui::vec2(rx as f32 * sx, ry as f32 * sy),
                         egui::vec2(rw as f32 * sx, rh as f32 * sy),
                     )
                 };
 
-                // Yellow: live EMA region (real-time, updates each frame).
+                // Yellow: live EMA region (updates every displayed frame).
                 if let Some([rx, ry, rw, rh]) = self.active_region {
                     painter.rect_stroke(
-                        overlay_rect(rx, ry, rw, rh),
+                        overlay(rx, ry, rw, rh),
                         0.0,
                         egui::Stroke::new(2.0, egui::Color32::YELLOW),
                         egui::StrokeKind::Outside,
                     );
                 }
 
-                // Cyan: full-video analysis result (stable, computed once).
+                // Cyan: full-video result (stable once analysis finishes).
                 if let Some([rx, ry, rw, rh]) = self.final_region {
                     painter.rect_stroke(
-                        overlay_rect(rx, ry, rw, rh),
+                        overlay(rx, ry, rw, rh),
                         0.0,
                         egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 220, 220)),
                         egui::StrokeKind::Outside,
