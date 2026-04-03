@@ -45,10 +45,17 @@ struct App {
     paused_at: Option<f64>,
     playing: bool,
     error: Option<String>,
+    /// Counts every displayed frame; used to select every 4th for export.
+    displayed_frame_count: u64,
+    /// Temporary directory where every 4th B&W frame is written as PNG.
+    frame_dump_dir: PathBuf,
 }
 
 impl App {
     fn new(_cc: &eframe::CreationContext) -> Self {
+        let frame_dump_dir = std::env::temp_dir().join("trim-dead-area-frames");
+        std::fs::create_dir_all(&frame_dump_dir)
+            .expect("failed to create frame dump directory");
         Self {
             file_path: None,
             texture: None,
@@ -58,6 +65,8 @@ impl App {
             paused_at: None,
             playing: false,
             error: None,
+            displayed_frame_count: 0,
+            frame_dump_dir,
         }
     }
 
@@ -75,6 +84,7 @@ impl App {
         self.playing = true;
         self.texture = None;
         self.error = None;
+        self.displayed_frame_count = 0;
     }
 
     fn video_time(&self) -> f64 {
@@ -153,6 +163,16 @@ impl App {
     }
 
     fn upload_frame(&mut self, ctx: &egui::Context, frame: VideoFrame) {
+        // Save every 4th displayed frame as a grayscale PNG.
+        if self.displayed_frame_count % 4 == 0 {
+            save_bw_frame(
+                &frame,
+                &self.frame_dump_dir,
+                self.displayed_frame_count,
+            );
+        }
+        self.displayed_frame_count += 1;
+
         let image = ColorImage::from_rgba_unmultiplied(
             [frame.width as usize, frame.height as usize],
             &frame.rgba,
@@ -258,6 +278,35 @@ impl eframe::App for App {
                 });
             }
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frame export helper
+// ---------------------------------------------------------------------------
+
+/// Convert an RGBA frame to grayscale and save it as a PNG in `dir`.
+/// Filename: `frame_NNNNNN.png` where N is `count`.
+fn save_bw_frame(frame: &VideoFrame, dir: &PathBuf, count: u64) {
+    use image::{GrayImage, Luma};
+
+    let w = frame.width;
+    let h = frame.height;
+    let mut gray = GrayImage::new(w, h);
+
+    for (i, pixel) in gray.pixels_mut().enumerate() {
+        let base = i * 4;
+        let r = frame.rgba[base] as f32;
+        let g = frame.rgba[base + 1] as f32;
+        let b = frame.rgba[base + 2] as f32;
+        // ITU-R BT.601 luma coefficients.
+        let luma = (0.299 * r + 0.587 * g + 0.114 * b).round() as u8;
+        *pixel = Luma([luma]);
+    }
+
+    let path = dir.join(format!("frame_{count:06}.png"));
+    if let Err(e) = gray.save(&path) {
+        eprintln!("Failed to save frame {count}: {e}");
     }
 }
 
