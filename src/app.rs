@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 
 use crate::decoder::{decode_video, VideoFrame};
-use crate::export::save_bw_frame;
 
 pub struct App {
     file_path: Option<PathBuf>,
@@ -18,17 +17,10 @@ pub struct App {
     paused_at: Option<f64>,
     playing: bool,
     error: Option<String>,
-    /// Counts every displayed frame; used to select every 4th for export.
-    displayed_frame_count: u64,
-    /// Temporary directory where every 4th B&W frame is written as PNG.
-    frame_dump_dir: PathBuf,
 }
 
 impl App {
     pub fn new(_cc: &eframe::CreationContext) -> Self {
-        let frame_dump_dir = std::env::temp_dir().join("trim-dead-area-frames");
-        std::fs::create_dir_all(&frame_dump_dir)
-            .expect("failed to create frame dump directory");
         Self {
             file_path: None,
             texture: None,
@@ -38,8 +30,6 @@ impl App {
             paused_at: None,
             playing: false,
             error: None,
-            displayed_frame_count: 0,
-            frame_dump_dir,
         }
     }
 
@@ -57,7 +47,6 @@ impl App {
         self.playing = true;
         self.texture = None;
         self.error = None;
-        self.displayed_frame_count = 0;
     }
 
     fn video_time(&self) -> f64 {
@@ -136,12 +125,6 @@ impl App {
     }
 
     fn upload_frame(&mut self, ctx: &egui::Context, frame: VideoFrame) {
-        // Save every 4th displayed frame as a grayscale PNG.
-        if self.displayed_frame_count % 4 == 0 {
-            save_bw_frame(&frame, &self.frame_dump_dir, self.displayed_frame_count);
-        }
-        self.displayed_frame_count += 1;
-
         let image = ColorImage::from_rgba_unmultiplied(
             [frame.width as usize, frame.height as usize],
             &frame.rgba,
