@@ -3,7 +3,7 @@ name = "trim-dead-area"
 version = "0.1.0"
 edition = "2021"
 description = "Video player that trims unchanging dead areas from frames"
-license = "MIT"
+license = "LGPL-3.0-only"
 
 [[bin]]
 name = "trim-dead-area"

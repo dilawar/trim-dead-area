@@ -8,10 +8,13 @@ file to the area that actually has content.
 
 ## Demo
 
-| | |
-|---|---|
-| **Input** | [YouTube Short](https://youtube.com/shorts/X9FQ7-t45hU?si=BQCwINot3tXfxBkf) — original video with static black borders |
-| **Output** | [YouTube](https://youtu.be/5WyGapgk64A) — cropped result produced by trim-dead-area |
+**Input** — original YouTube Short with static black borders:
+
+[![Input video](https://img.youtube.com/vi/X9FQ7-t45hU/0.jpg)](https://youtube.com/shorts/X9FQ7-t45hU?si=BQCwINot3tXfxBkf)
+
+**Output** — cropped result produced by trim-dead-area:
+
+[![Output video](https://img.youtube.com/vi/5WyGapgk64A/0.jpg)](https://youtu.be/5WyGapgk64A)
 
 ---
 
@@ -199,4 +202,4 @@ src/
 
 ## License
 
-MIT
+[GNU Lesser General Public License v3.0](LICENSE)
