@@ -252,9 +252,16 @@ impl App {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         if ui.button("Save Cropped Video…").clicked() {
+                            let default_name = self.file_path.as_deref()
+                                .and_then(|p| {
+                                    let stem = p.file_stem()?.to_string_lossy();
+                                    let ext  = p.extension().map(|e| e.to_string_lossy()).unwrap_or("mp4".into());
+                                    Some(format!("{stem}_cropped.{ext}"))
+                                })
+                                .unwrap_or_else(|| "cropped.mp4".into());
                             if let Some(output) = rfd::FileDialog::new()
                                 .add_filter("MP4 video", &["mp4"])
-                                .set_file_name("cropped.mp4")
+                                .set_file_name(&default_name)
                                 .save_file()
                             {
                                 action = Some(Action::StartExport { region: [x, y, w, h], output });
