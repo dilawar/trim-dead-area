@@ -165,41 +165,6 @@ When playback finishes the **Active Region Detected** dialog opens:
 
 ---
 
-## Logging
-
-The application uses [`tracing`](https://docs.rs/tracing) for structured
-logging. Set the `RUST_LOG` environment variable to control verbosity:
-
-```sh
-# Default (info and above)
-./trim-dead-area
-
-# Show per-frame detail and region changes
-RUST_LOG=debug ./trim-dead-area
-
-# Show per-block MAD/EMA values (very verbose)
-RUST_LOG=trace ./trim-dead-area
-
-# Per-module control
-RUST_LOG=trim_dead_area::decoder=debug,trim_dead_area::analysis=warn ./trim-dead-area
-```
-
----
-
-## Project structure
-
-```
-src/
-├── main.rs       Entry point; initialises the tracing subscriber.
-├── lib.rs        Module declarations.
-├── app.rs        egui/eframe application — UI, playback loop, dialog state.
-├── decoder.rs    FFmpeg video decoder; runs on a background thread.
-├── analysis.rs   Real-time (EMA) and full-video (mean MAD) motion analysers.
-└── writer.rs     Invokes ffmpeg to write the cropped output file.
-```
-
----
-
 ## License
 
 [GNU Lesser General Public License v3.0](LICENSE)
