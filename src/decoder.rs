@@ -17,10 +17,10 @@ pub struct VideoFrame {
 /// Runs on a dedicated background thread.
 #[tracing::instrument(skip(tx), fields(path = %path.display()))]
 pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
-    use ffmpeg_next as ffmpeg;
     use ffmpeg::format::Pixel;
     use ffmpeg::media::Type;
     use ffmpeg::software::scaling::{context::Context as ScaleCtx, flag::Flags};
+    use ffmpeg_next as ffmpeg;
 
     macro_rules! bail {
         ($msg:expr) => {{
@@ -150,11 +150,11 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
     // Flush buffered frames from the decoder.
     let _ = decoder.send_eof();
     while decoder.receive_frame(&mut decoded).is_ok() {
-        if scaler.run(&decoded, &mut rgba_frame).is_ok() {
-            if !send_frame(&decoded, &rgba_frame, &mut frame_idx, tb) {
-                info!("receiver dropped during flush, stopping");
-                return;
-            }
+        if scaler.run(&decoded, &mut rgba_frame).is_ok()
+            && !send_frame(&decoded, &rgba_frame, &mut frame_idx, tb)
+        {
+            info!("receiver dropped during flush, stopping");
+            return;
         }
     }
 

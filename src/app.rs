@@ -13,11 +13,20 @@ use crate::writer::crop_video_async;
 
 enum CropDialog {
     Hidden,
-    Confirm { region: [u32; 4] },
+    Confirm {
+        region: [u32; 4],
+    },
     /// ffmpeg is running.
-    Exporting { region: [u32; 4], output: PathBuf },
-    Done { output: PathBuf },
-    Failed { message: String },
+    Exporting {
+        region: [u32; 4],
+        output: PathBuf,
+    },
+    Done {
+        output: PathBuf,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 // ── App ──────────────────────────────────────────────────────────────────────
@@ -252,10 +261,15 @@ impl App {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         if ui.button("Save Cropped Video…").clicked() {
-                            let default_name = self.file_path.as_deref()
+                            let default_name = self
+                                .file_path
+                                .as_deref()
                                 .and_then(|p| {
                                     let stem = p.file_stem()?.to_string_lossy();
-                                    let ext  = p.extension().map(|e| e.to_string_lossy()).unwrap_or("mp4".into());
+                                    let ext = p
+                                        .extension()
+                                        .map(|e| e.to_string_lossy())
+                                        .unwrap_or("mp4".into());
                                     Some(format!("{stem}_cropped.{ext}"))
                                 })
                                 .unwrap_or_else(|| "cropped.mp4".into());
@@ -264,7 +278,10 @@ impl App {
                                 .set_file_name(&default_name)
                                 .save_file()
                             {
-                                action = Some(Action::StartExport { region: [x, y, w, h], output });
+                                action = Some(Action::StartExport {
+                                    region: [x, y, w, h],
+                                    output,
+                                });
                             }
                         }
                         if ui.button("Dismiss").clicked() {
@@ -331,9 +348,7 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
 
-        let dropped = ctx.input(|i| {
-            i.raw.dropped_files.first().and_then(|f| f.path.clone())
-        });
+        let dropped = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.clone()));
         if let Some(path) = dropped {
             self.open_file(path);
         }
@@ -348,7 +363,9 @@ impl eframe::App for App {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter(
                             "Video",
-                            &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "ts", "m4v"],
+                            &[
+                                "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "ts", "m4v",
+                            ],
                         )
                         .pick_file()
                     {
@@ -357,7 +374,11 @@ impl eframe::App for App {
                 }
 
                 ui.add_enabled_ui(self.file_path.is_some(), |ui| {
-                    let label = if self.playing { "⏸ Pause" } else { "▶ Play" };
+                    let label = if self.playing {
+                        "⏸ Pause"
+                    } else {
+                        "▶ Play"
+                    };
                     if ui.button(label).clicked() {
                         self.toggle_play_pause();
                     }
@@ -440,8 +461,7 @@ impl eframe::App for App {
             };
 
             let scale = (avail.width() / effective.x).min(avail.height() / effective.y);
-            let disp_rect =
-                egui::Rect::from_center_size(avail.center(), effective * scale);
+            let disp_rect = egui::Rect::from_center_size(avail.center(), effective * scale);
 
             let painter = ui.painter();
             painter.image(texture.id(), disp_rect, uv, egui::Color32::WHITE);

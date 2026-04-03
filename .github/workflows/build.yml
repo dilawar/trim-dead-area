@@ -11,9 +11,14 @@ env:
 
 jobs:
   # ── Linux ──────────────────────────────────────────────────────────────────
+  # ubuntu-latest ships FFmpeg 4–6 via apt, but ffmpeg-next = "7" requires
+  # FFmpeg 7.x headers.  We download the avbuild prebuilt tarball instead,
+  # which is the same approach used by the upstream rust-ffmpeg CI.
   build-linux:
     name: Linux x86_64
     runs-on: ubuntu-latest
+    env:
+      FFMPEG_VERSION: "7.1"
     steps:
       - uses: actions/checkout@v4
 
@@ -21,12 +26,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang pkg-config \
-            libavcodec-dev libavformat-dev libavutil-dev \
-            libavfilter-dev libswscale-dev libswresample-dev \
+            clang curl pkg-config xz-utils \
+            libc++-dev \
             libxkbcommon-dev libwayland-dev \
             libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
             libgl1-mesa-dev libgtk-3-dev
+
+      - name: Download FFmpeg ${{ env.FFMPEG_VERSION }} (avbuild)
+        run: |
+          curl -L \
+            "https://sourceforge.net/projects/avbuild/files/linux/ffmpeg-${{ env.FFMPEG_VERSION }}-linux-clang-default.tar.xz/download" \
+            -o ffmpeg.tar.xz
+          tar -xf ffmpeg.tar.xz
+          echo "FFMPEG_DIR=$PWD/ffmpeg-${{ env.FFMPEG_VERSION }}-linux-clang-default" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -45,8 +57,11 @@ jobs:
           if-no-files-found: error
 
   # ── macOS ──────────────────────────────────────────────────────────────────
+  # macos-latest is Apple Silicon (arm64).  Cross-compiling for x86_64 from
+  # an arm64 runner fails because pkg-config finds arm64 FFmpeg libraries.
+  # We build the native arch only and let the runner determine it.
   build-macos:
-    name: macOS (universal)
+    name: macOS
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,32 +69,20 @@ jobs:
       - name: Install FFmpeg
         run: brew install ffmpeg pkg-config
 
-      - name: Install Rust (+ aarch64 target for universal binary)
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache build artefacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Build x86_64
-        run: cargo build --release --target x86_64-apple-darwin
-
-      - name: Build aarch64
-        run: cargo build --release --target aarch64-apple-darwin
-
-      - name: Create universal binary with lipo
-        run: |
-          lipo -create \
-            target/x86_64-apple-darwin/release/trim-dead-area \
-            target/aarch64-apple-darwin/release/trim-dead-area \
-            -output trim-dead-area-macos-universal
+      - name: Build (release)
+        run: cargo build --release
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: trim-dead-area-macos-universal
-          path: trim-dead-area-macos-universal
+          name: trim-dead-area-macos
+          path: target/release/trim-dead-area
           if-no-files-found: error
 
   # ── Windows ────────────────────────────────────────────────────────────────
@@ -142,7 +145,7 @@ jobs:
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
         with:
-          name: trim-dead-area-macos-universal
+          name: trim-dead-area-macos
           path: macos/
 
       - name: Download Windows artifact
@@ -153,9 +156,9 @@ jobs:
 
       - name: Create release archives
         run: |
-          chmod +x linux/trim-dead-area macos/trim-dead-area-macos-universal
-          tar -czf trim-dead-area-linux-x86_64.tar.gz -C linux trim-dead-area
-          tar -czf trim-dead-area-macos-universal.tar.gz -C macos trim-dead-area-macos-universal
+          chmod +x linux/trim-dead-area macos/trim-dead-area
+          tar -czf trim-dead-area-linux-x86_64.tar.gz   -C linux   trim-dead-area
+          tar -czf trim-dead-area-macos.tar.gz           -C macos   trim-dead-area
           cd windows && zip -r ../trim-dead-area-windows-x86_64.zip . && cd ..
 
       - name: Publish release
@@ -164,5 +167,5 @@ jobs:
           generate_release_notes: true
           files: |
             trim-dead-area-linux-x86_64.tar.gz
-            trim-dead-area-macos-universal.tar.gz
+            trim-dead-area-macos.tar.gz
             trim-dead-area-windows-x86_64.zip

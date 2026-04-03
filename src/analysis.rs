@@ -14,6 +14,7 @@ const BLOCK: usize = 16;
 
 /// Tracks per-block inter-frame motion via an exponential moving average of
 /// the mean absolute difference (MAD) between consecutive grayscale frames.
+#[derive(Default)]
 pub struct MotionAnalyzer {
     prev_gray: Vec<u8>,
     /// EMA of per-block MAD, in the same units as pixel intensity (0–255).
@@ -22,19 +23,6 @@ pub struct MotionAnalyzer {
     pub frame_height: u32,
     cols: usize,
     rows: usize,
-}
-
-impl Default for MotionAnalyzer {
-    fn default() -> Self {
-        Self {
-            prev_gray: Vec::new(),
-            motion_map: Vec::new(),
-            frame_width: 0,
-            frame_height: 0,
-            cols: 0,
-            rows: 0,
-        }
-    }
 }
 
 impl MotionAnalyzer {
@@ -49,11 +37,17 @@ impl MotionAnalyzer {
     pub fn update(&mut self, frame: &VideoFrame, threshold: f32) -> Option<[u32; 4]> {
         let w = frame.width as usize;
         let h = frame.height as usize;
-        let cols = (w + BLOCK - 1) / BLOCK;
-        let rows = (h + BLOCK - 1) / BLOCK;
+        let cols = w.div_ceil(BLOCK);
+        let rows = h.div_ceil(BLOCK);
 
         if self.frame_width != frame.width || self.frame_height != frame.height {
-            debug!(width = w, height = h, cols, rows, "motion analyzer initialised");
+            debug!(
+                width = w,
+                height = h,
+                cols,
+                rows,
+                "motion analyzer initialised"
+            );
             self.prev_gray = vec![0u8; w * h];
             self.motion_map = vec![0.0f32; cols * rows];
             self.cols = cols;
@@ -74,7 +68,14 @@ impl MotionAnalyzer {
         }
         self.prev_gray = gray;
 
-        active_bbox(&self.motion_map, self.cols, self.rows, self.frame_width, self.frame_height, threshold)
+        active_bbox(
+            &self.motion_map,
+            self.cols,
+            self.rows,
+            self.frame_width,
+            self.frame_height,
+            threshold,
+        )
     }
 }
 
@@ -108,8 +109,8 @@ impl FullVideoAnalyzer {
     fn update(&mut self, frame: &VideoFrame) {
         let w = frame.width as usize;
         let h = frame.height as usize;
-        let cols = (w + BLOCK - 1) / BLOCK;
-        let rows = (h + BLOCK - 1) / BLOCK;
+        let cols = w.div_ceil(BLOCK);
+        let rows = h.div_ceil(BLOCK);
 
         if self.frame_width != frame.width || self.frame_height != frame.height {
             self.prev_gray = vec![0u8; w * h];
@@ -141,7 +142,14 @@ impl FullVideoAnalyzer {
             .map(|&s| (s / self.frames as f64) as f32)
             .collect();
 
-        active_bbox(&mean_map, self.cols, self.rows, self.frame_width, self.frame_height, threshold)
+        active_bbox(
+            &mean_map,
+            self.cols,
+            self.rows,
+            self.frame_width,
+            self.frame_height,
+            threshold,
+        )
     }
 }
 
@@ -166,10 +174,10 @@ pub fn analyze_file_async(
 
 #[tracing::instrument(skip_all, fields(path = %path.display(), skip, threshold))]
 fn run_analysis(path: &Path, skip: usize, threshold: f32) -> Option<[u32; 4]> {
-    use ffmpeg_next as ffmpeg;
     use ffmpeg::format::Pixel;
     use ffmpeg::media::Type;
     use ffmpeg::software::scaling::{context::Context as ScaleCtx, flag::Flags};
+    use ffmpeg_next as ffmpeg;
 
     if let Err(e) = ffmpeg::init() {
         error!("FFmpeg init: {e}");
@@ -236,9 +244,9 @@ fn run_analysis(path: &Path, skip: usize, threshold: f32) -> Option<[u32; 4]> {
     let skip = skip.max(1) as u64;
 
     let process = |decoded: &ffmpeg::util::frame::video::Video,
-                       rgba_frame: &ffmpeg::util::frame::video::Video,
-                       analyzer: &mut FullVideoAnalyzer,
-                       tb: f64| {
+                   rgba_frame: &ffmpeg::util::frame::video::Video,
+                   analyzer: &mut FullVideoAnalyzer,
+                   tb: f64| {
         let pts_secs = decoded.pts().map(|p| p as f64 * tb).unwrap_or(0.0);
         let width = rgba_frame.width() as usize;
         let height = rgba_frame.height() as usize;
@@ -265,10 +273,8 @@ fn run_analysis(path: &Path, skip: usize, threshold: f32) -> Option<[u32; 4]> {
             continue;
         }
         while decoder.receive_frame(&mut decoded).is_ok() {
-            if frame_idx % skip == 0 {
-                if scaler.run(&decoded, &mut rgba_frame).is_ok() {
-                    process(&decoded, &rgba_frame, &mut analyzer, tb);
-                }
+            if frame_idx.is_multiple_of(skip) && scaler.run(&decoded, &mut rgba_frame).is_ok() {
+                process(&decoded, &rgba_frame, &mut analyzer, tb);
             }
             frame_idx += 1;
         }
@@ -276,10 +282,8 @@ fn run_analysis(path: &Path, skip: usize, threshold: f32) -> Option<[u32; 4]> {
 
     let _ = decoder.send_eof();
     while decoder.receive_frame(&mut decoded).is_ok() {
-        if frame_idx % skip == 0 {
-            if scaler.run(&decoded, &mut rgba_frame).is_ok() {
-                process(&decoded, &rgba_frame, &mut analyzer, tb);
-            }
+        if frame_idx.is_multiple_of(skip) && scaler.run(&decoded, &mut rgba_frame).is_ok() {
+            process(&decoded, &rgba_frame, &mut analyzer, tb);
         }
         frame_idx += 1;
     }
