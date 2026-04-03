@@ -6,6 +6,15 @@ file to the area that actually has content.
 
 ---
 
+## Demo
+
+| | |
+|---|---|
+| **Input** | [YouTube Short](https://youtube.com/shorts/X9FQ7-t45hU?si=BQCwINot3tXfxBkf) — original video with static black borders |
+| **Output** | [YouTube](https://youtu.be/5WyGapgk64A) — cropped result produced by trim-dead-area |
+
+---
+
 ## How it works
 
 1. **Open a video.** The player starts immediately and runs through the frames
