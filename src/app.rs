@@ -6,29 +6,44 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use tracing::{debug, info, warn};
 
-use crate::analysis::MotionAnalyzer;
+use crate::analysis::{analyze_file_async, MotionAnalyzer};
 use crate::decoder::{decode_video, VideoFrame};
+use crate::writer::crop_video_async;
+
+// ── Crop dialog state machine ────────────────────────────────────────────────
+
+enum CropDialog {
+    Hidden,
+    Confirm { region: [u32; 4] },
+    /// ffmpeg is running; we keep the output path here so Done can show it.
+    Exporting { region: [u32; 4], output: PathBuf },
+    Done { output: PathBuf },
+    Failed { message: String },
+}
+
+// ── App ──────────────────────────────────────────────────────────────────────
 
 pub struct App {
     file_path: Option<PathBuf>,
     texture: Option<TextureHandle>,
     frame_rx: Option<Receiver<Option<VideoFrame>>>,
-    /// One-frame lookahead: a decoded frame whose PTS is still in the future.
     lookahead: Option<VideoFrame>,
     play_start: Option<Instant>,
     paused_at: Option<f64>,
     playing: bool,
     error: Option<String>,
 
-    // ── Motion analysis ────────────────────────────────────────────────────
+    // Real-time motion analysis (during playback).
     motion_analyzer: MotionAnalyzer,
-    /// MAD threshold (0–255 intensity units). Blocks below this are "dead".
-    variance_threshold: f32,
-    /// Bounding box [x, y, w, h] of the high-motion region, in pixel coords.
+    pub variance_threshold: f32,
     active_region: Option<[u32; 4]>,
-    /// When true, only the active region is displayed (UV crop). Otherwise the
-    /// full frame is shown with an overlay rectangle.
     apply_crop: bool,
+
+    // Full-video background analysis.
+    analysis_rx: Option<Receiver<Option<[u32; 4]>>>,
+    final_region: Option<[u32; 4]>,
+    crop_dialog: CropDialog,
+    export_rx: Option<Receiver<Result<(), String>>>,
 }
 
 impl App {
@@ -46,14 +61,23 @@ impl App {
             variance_threshold: 5.0,
             active_region: None,
             apply_crop: false,
+            analysis_rx: None,
+            final_region: None,
+            crop_dialog: CropDialog::Hidden,
+            export_rx: None,
         }
     }
 
     pub fn open_file(&mut self, path: PathBuf) {
         info!(path = %path.display(), "opening file");
+
         let (tx, rx) = mpsc::sync_channel(30);
-        let path_clone = path.clone();
-        thread::spawn(move || decode_video(path_clone, tx));
+        thread::spawn({
+            let path = path.clone();
+            move || decode_video(path, tx)
+        });
+
+        let analysis_rx = analyze_file_async(path.clone(), 4, self.variance_threshold);
 
         self.file_path = Some(path);
         self.frame_rx = Some(rx);
@@ -65,6 +89,10 @@ impl App {
         self.error = None;
         self.motion_analyzer.reset();
         self.active_region = None;
+        self.analysis_rx = Some(analysis_rx);
+        self.final_region = None;
+        self.crop_dialog = CropDialog::Hidden;
+        self.export_rx = None;
     }
 
     fn video_time(&self) -> f64 {
@@ -87,8 +115,6 @@ impl App {
         }
     }
 
-    /// Drain the decode channel and update the displayed texture to the most
-    /// recent frame whose PTS is ≤ current wall-clock playback position.
     fn poll_frames(&mut self, ctx: &egui::Context) {
         if !self.playing {
             return;
@@ -126,6 +152,7 @@ impl App {
                 Ok(None) => {
                     self.playing = false;
                     self.paused_at = Some(now);
+                    info!("playback ended");
                     break;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -143,14 +170,12 @@ impl App {
     }
 
     fn upload_frame(&mut self, ctx: &egui::Context, frame: VideoFrame) {
-        // Run motion analysis; update the active region bounding box.
         let new_region = self.motion_analyzer.update(&frame, self.variance_threshold);
         if new_region != self.active_region {
             debug!(region = ?new_region, "active region changed");
             self.active_region = new_region;
         }
 
-        // Always upload the full frame — cropping is handled via UV at draw time.
         let image = ColorImage::from_rgba_unmultiplied(
             [frame.width as usize, frame.height as usize],
             &frame.rgba,
@@ -163,6 +188,128 @@ impl App {
             }
         }
     }
+
+    fn poll_analysis(&mut self) {
+        let Some(rx) = &self.analysis_rx else { return };
+        if let Ok(result) = rx.try_recv() {
+            info!(region = ?result, "background analysis complete");
+            self.final_region = result;
+            self.analysis_rx = None;
+            if let Some(region) = result {
+                self.crop_dialog = CropDialog::Confirm { region };
+            }
+        }
+    }
+
+    fn poll_export(&mut self) {
+        let Some(rx) = &self.export_rx else { return };
+        if let Ok(result) = rx.try_recv() {
+            self.export_rx = None;
+            // Extract the output path from the current Exporting state.
+            let output = match &self.crop_dialog {
+                CropDialog::Exporting { output, .. } => output.clone(),
+                _ => PathBuf::new(),
+            };
+            self.crop_dialog = match result {
+                Ok(()) => {
+                    info!(output = %output.display(), "export complete");
+                    CropDialog::Done { output }
+                }
+                Err(e) => {
+                    warn!(error = %e, "export failed");
+                    CropDialog::Failed { message: e }
+                }
+            };
+        }
+    }
+
+    // ── Crop dialog ──────────────────────────────────────────────────────────
+
+    fn show_crop_dialog(&mut self, ctx: &egui::Context) {
+        if matches!(self.crop_dialog, CropDialog::Hidden) {
+            return;
+        }
+
+        enum Action {
+            StartExport { region: [u32; 4], output: PathBuf },
+            Dismiss,
+        }
+        let mut action: Option<Action> = None;
+
+        egui::Window::new("Active Region")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| match &self.crop_dialog {
+                CropDialog::Confirm { region } => {
+                    let [x, y, w, h] = *region;
+                    ui.label("Full-video analysis found the most active region:");
+                    ui.monospace(format!("  {w} × {h}  at  ({x}, {y})"));
+                    ui.add_space(6.0);
+                    ui.label("Write a new video file cropped to this rectangle?");
+                    ui.small("All frames will be included — no frames are skipped in the output.");
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save Cropped Video…").clicked() {
+                            if let Some(output) = rfd::FileDialog::new()
+                                .add_filter("MP4 video", &["mp4"])
+                                .set_file_name("cropped.mp4")
+                                .save_file()
+                            {
+                                action = Some(Action::StartExport { region: [x, y, w, h], output });
+                            }
+                        }
+                        if ui.button("Dismiss").clicked() {
+                            action = Some(Action::Dismiss);
+                        }
+                    });
+                }
+
+                CropDialog::Exporting { region, .. } => {
+                    let [_, _, w, h] = *region;
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!("Exporting {w}×{h} crop…"));
+                    });
+                    ui.small("Running ffmpeg — every frame is written to the output.");
+                }
+
+                CropDialog::Done { output } => {
+                    ui.label("Export complete!");
+                    ui.monospace(output.display().to_string());
+                    ui.add_space(4.0);
+                    if ui.button("Close").clicked() {
+                        action = Some(Action::Dismiss);
+                    }
+                }
+
+                CropDialog::Failed { message } => {
+                    ui.colored_label(egui::Color32::RED, "Export failed:");
+                    ui.label(message);
+                    ui.add_space(4.0);
+                    if ui.button("Close").clicked() {
+                        action = Some(Action::Dismiss);
+                    }
+                }
+
+                CropDialog::Hidden => {}
+            });
+
+        match action {
+            Some(Action::StartExport { region, output }) => {
+                info!(output = %output.display(), region = ?region, "starting export");
+                if let Some(input) = &self.file_path {
+                    let rx = crop_video_async(input.clone(), output.clone(), region);
+                    self.export_rx = Some(rx);
+                    self.crop_dialog = CropDialog::Exporting { region, output };
+                }
+            }
+            Some(Action::Dismiss) => {
+                self.crop_dialog = CropDialog::Hidden;
+            }
+            None => {}
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -172,8 +319,14 @@ impl eframe::App for App {
         }
 
         self.poll_frames(ctx);
+        self.poll_analysis();
+        self.poll_export();
 
-        // Handle drag-and-drop.
+        // Repaint while export is in progress.
+        if self.export_rx.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+
         let dropped = ctx.input(|i| {
             i.raw.dropped_files.first().and_then(|f| f.path.clone())
         });
@@ -181,11 +334,11 @@ impl eframe::App for App {
             self.open_file(path);
         }
 
-        // ── Bottom control bar ──────────────────────────────────────────────
+        self.show_crop_dialog(ctx);
+
+        // ── Bottom control bar ───────────────────────────────────────────────
         egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
             ui.add_space(6.0);
-
-            // Row 1: playback controls.
             ui.horizontal(|ui| {
                 if ui.button("Open File").clicked() {
                     if let Some(path) = rfd::FileDialog::new()
@@ -211,6 +364,11 @@ impl eframe::App for App {
                     ui.label(format!("  {name}"));
                 }
 
+                if self.analysis_rx.is_some() {
+                    ui.spinner();
+                    ui.weak("analysing…");
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let t = self.video_time();
                     let m = (t / 60.0) as u64;
@@ -221,7 +379,6 @@ impl eframe::App for App {
 
             ui.separator();
 
-            // Row 2: motion analysis controls.
             ui.horizontal(|ui| {
                 ui.label("Motion threshold:");
                 ui.add(
@@ -230,21 +387,18 @@ impl eframe::App for App {
                         .fixed_decimals(1)
                         .suffix(" MAD"),
                 );
-
                 ui.separator();
                 ui.checkbox(&mut self.apply_crop, "Crop to active region");
-
-                // Show bounding box dimensions when a region has been found.
                 if let Some([x, y, w, h]) = self.active_region {
                     ui.separator();
-                    ui.weak(format!("active region  {w}×{h}  @ ({x},{y})"));
+                    ui.weak(format!("live {w}×{h} @ ({x},{y})"));
                 }
             });
 
             ui.add_space(6.0);
         });
 
-        // ── Central video area ──────────────────────────────────────────────
+        // ── Central video area ───────────────────────────────────────────────
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(err) = &self.error {
                 let msg = err.clone();
@@ -261,11 +415,9 @@ impl eframe::App for App {
                 return;
             };
 
-            let full_size = texture.size_vec2(); // full frame dimensions
+            let full_size = texture.size_vec2();
             let avail = ui.available_rect_before_wrap();
 
-            // Determine which portion of the texture to show (UV in [0,1]²)
-            // and what the effective aspect ratio of that portion is.
             let (uv, effective) = match (self.apply_crop, self.active_region) {
                 (true, Some([rx, ry, rw, rh])) => {
                     let uv = egui::Rect::from_min_max(
@@ -283,7 +435,6 @@ impl eframe::App for App {
                 ),
             };
 
-            // Fit `effective` into the available rect while preserving aspect ratio.
             let scale = (avail.width() / effective.x).min(avail.height() / effective.y);
             let disp_size = effective * scale;
             let disp_rect = egui::Rect::from_center_size(avail.center(), disp_size);
@@ -291,19 +442,33 @@ impl eframe::App for App {
             let painter = ui.painter();
             painter.image(texture.id(), disp_rect, uv, egui::Color32::WHITE);
 
-            // Overlay rectangle showing the active region (only when not cropping).
             if !self.apply_crop {
-                if let Some([rx, ry, rw, rh]) = self.active_region {
-                    let sx = disp_size.x / full_size.x;
-                    let sy = disp_size.y / full_size.y;
-                    let overlay = egui::Rect::from_min_size(
+                let sx = disp_size.x / full_size.x;
+                let sy = disp_size.y / full_size.y;
+
+                let overlay_rect = |rx: u32, ry: u32, rw: u32, rh: u32| {
+                    egui::Rect::from_min_size(
                         disp_rect.min + egui::vec2(rx as f32 * sx, ry as f32 * sy),
                         egui::vec2(rw as f32 * sx, rh as f32 * sy),
-                    );
+                    )
+                };
+
+                // Yellow: live EMA region (real-time, updates each frame).
+                if let Some([rx, ry, rw, rh]) = self.active_region {
                     painter.rect_stroke(
-                        overlay,
+                        overlay_rect(rx, ry, rw, rh),
                         0.0,
                         egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+
+                // Cyan: full-video analysis result (stable, computed once).
+                if let Some([rx, ry, rw, rh]) = self.final_region {
+                    painter.rect_stroke(
+                        overlay_rect(rx, ry, rw, rh),
+                        0.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 220, 220)),
                         egui::StrokeKind::Outside,
                     );
                 }
