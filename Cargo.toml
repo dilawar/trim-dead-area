@@ -1,0 +1,18 @@
+[package]
+name = "trim-dead-area"
+version = "0.1.0"
+edition = "2021"
+description = "Video player that trims unchanging dead areas from frames"
+license = "MIT"
+
+[[bin]]
+name = "trim-dead-area"
+path = "src/main.rs"
+
+[dependencies]
+ffmpeg-next = "7"
+eframe = "0.31"
+rfd = "0.15"
+
+[profile.release]
+opt-level = 3

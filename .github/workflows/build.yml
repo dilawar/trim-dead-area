@@ -1,0 +1,168 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Linux ──────────────────────────────────────────────────────────────────
+  build-linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang pkg-config \
+            libavcodec-dev libavformat-dev libavutil-dev \
+            libavfilter-dev libswscale-dev libswresample-dev \
+            libxkbcommon-dev libwayland-dev \
+            libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libgl1-mesa-dev libgtk-3-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache build artefacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: trim-dead-area-linux-x86_64
+          path: target/release/trim-dead-area
+          if-no-files-found: error
+
+  # ── macOS ──────────────────────────────────────────────────────────────────
+  build-macos:
+    name: macOS (universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: brew install ffmpeg pkg-config
+
+      - name: Install Rust (+ aarch64 target for universal binary)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache build artefacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build x86_64
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Build aarch64
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Create universal binary with lipo
+        run: |
+          lipo -create \
+            target/x86_64-apple-darwin/release/trim-dead-area \
+            target/aarch64-apple-darwin/release/trim-dead-area \
+            -output trim-dead-area-macos-universal
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: trim-dead-area-macos-universal
+          path: trim-dead-area-macos-universal
+          if-no-files-found: error
+
+  # ── Windows ────────────────────────────────────────────────────────────────
+  build-windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    env:
+      FFMPEG_DOWNLOAD_URL: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg (shared build from gyan.dev)
+        run: |
+          $VCINSTALLDIR = $(& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath)
+          Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
+          Invoke-WebRequest "${env:FFMPEG_DOWNLOAD_URL}" -OutFile ffmpeg-release-full-shared.7z
+          7z x ffmpeg-release-full-shared.7z
+          mkdir ffmpeg
+          mv ffmpeg-*/* ffmpeg/
+          Add-Content $env:GITHUB_ENV "FFMPEG_DIR=${pwd}\ffmpeg`n"
+          Add-Content $env:GITHUB_PATH "${pwd}\ffmpeg\bin`n"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache build artefacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Package binary + FFmpeg DLLs
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target\release\trim-dead-area.exe dist\
+          Copy-Item ffmpeg\bin\*.dll dist\
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: trim-dead-area-windows-x86_64
+          path: dist/
+          if-no-files-found: error
+
+  # ── GitHub Release (on version tags only) ──────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-macos, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: trim-dead-area-linux-x86_64
+          path: linux/
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: trim-dead-area-macos-universal
+          path: macos/
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: trim-dead-area-windows-x86_64
+          path: windows/
+
+      - name: Create release archives
+        run: |
+          chmod +x linux/trim-dead-area macos/trim-dead-area-macos-universal
+          tar -czf trim-dead-area-linux-x86_64.tar.gz -C linux trim-dead-area
+          tar -czf trim-dead-area-macos-universal.tar.gz -C macos trim-dead-area-macos-universal
+          cd windows && zip -r ../trim-dead-area-windows-x86_64.zip . && cd ..
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            trim-dead-area-linux-x86_64.tar.gz
+            trim-dead-area-macos-universal.tar.gz
+            trim-dead-area-windows-x86_64.zip
