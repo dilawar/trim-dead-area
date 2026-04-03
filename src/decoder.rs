@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::mpsc::SyncSender;
 
+use tracing::{debug, error, info, warn};
+
 /// A single decoded video frame in packed RGBA format.
 pub struct VideoFrame {
     pub rgba: Vec<u8>,
@@ -13,6 +15,7 @@ pub struct VideoFrame {
 /// Decode every video frame from `path` and send them over `tx`.
 /// Sends `None` to signal end-of-stream or an unrecoverable error.
 /// Runs on a dedicated background thread.
+#[tracing::instrument(skip(tx), fields(path = %path.display()))]
 pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
     use ffmpeg_next as ffmpeg;
     use ffmpeg::format::Pixel;
@@ -21,7 +24,7 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
 
     macro_rules! bail {
         ($msg:expr) => {{
-            eprintln!("{}", $msg);
+            error!("{}", $msg);
             let _ = tx.send(None);
             return;
         }};
@@ -33,8 +36,14 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
 
     let mut ictx = match ffmpeg::format::input(&path) {
         Ok(ctx) => ctx,
-        Err(e) => bail!(format!("Cannot open '{}': {e}", path.display())),
+        Err(e) => bail!(format!("cannot open file: {e}")),
     };
+
+    info!(
+        streams = ictx.nb_streams(),
+        duration_s = ictx.duration() as f64 / f64::from(ffmpeg::ffi::AV_TIME_BASE),
+        "opened input"
+    );
 
     // Extract stream info and build the decoder before entering the packet loop
     // so we don't hold a borrow on `ictx` across it.
@@ -42,21 +51,31 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
         let streams = ictx.streams();
         let stream = match streams.best(Type::Video) {
             Some(s) => s,
-            None => bail!(format!("No video stream in '{}'", path.display())),
+            None => bail!("no video stream found"),
         };
         let idx = stream.index();
         let time_base = stream.time_base();
         let tb = time_base.0 as f64 / time_base.1 as f64;
         let ctx = match ffmpeg::codec::context::Context::from_parameters(stream.parameters()) {
             Ok(c) => c,
-            Err(e) => bail!(format!("Codec context error: {e}")),
+            Err(e) => bail!(format!("codec context error: {e}")),
         };
         let dec = match ctx.decoder().video() {
             Ok(d) => d,
-            Err(e) => bail!(format!("Video decoder error: {e}")),
+            Err(e) => bail!(format!("video decoder error: {e}")),
         };
         (idx, tb, dec)
     };
+
+    info!(
+        stream_index = stream_idx,
+        width = decoder.width(),
+        height = decoder.height(),
+        codec = ?decoder.id(),
+        time_base_num = %ictx.stream(stream_idx).unwrap().time_base().0,
+        time_base_den = %ictx.stream(stream_idx).unwrap().time_base().1,
+        "video stream ready"
+    );
 
     let mut scaler = match ScaleCtx::get(
         decoder.format(),
@@ -68,7 +87,7 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
         Flags::BILINEAR,
     ) {
         Ok(s) => s,
-        Err(e) => bail!(format!("Scaler error: {e}")),
+        Err(e) => bail!(format!("scaler error: {e}")),
     };
 
     let mut decoded = ffmpeg::util::frame::video::Video::empty();
@@ -90,14 +109,15 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
         let stride = rgba_frame.stride(0);
         let raw = rgba_frame.data(0);
 
-        // Copy each row, stripping any stride padding added by the scaler.
         let mut rgba = Vec::with_capacity(width * height * 4);
         for row in 0..height {
             let start = row * stride;
             rgba.extend_from_slice(&raw[start..start + width * 4]);
         }
 
+        debug!(frame = *frame_idx, pts_secs, "decoded frame");
         *frame_idx += 1;
+
         tx.send(Some(VideoFrame {
             rgba,
             width: width as u32,
@@ -111,15 +131,18 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
         if stream.index() != stream_idx {
             continue;
         }
-        if decoder.send_packet(&packet).is_err() {
+        if let Err(e) = decoder.send_packet(&packet) {
+            warn!("send_packet error: {e}");
             continue;
         }
         while decoder.receive_frame(&mut decoded).is_ok() {
-            if scaler.run(&decoded, &mut rgba_frame).is_err() {
+            if let Err(e) = scaler.run(&decoded, &mut rgba_frame) {
+                warn!("scaler run error: {e}");
                 continue;
             }
             if !send_frame(&decoded, &rgba_frame, &mut frame_idx, tb) {
-                return; // UI window was closed.
+                info!("receiver dropped, stopping decode");
+                return;
             }
         }
     }
@@ -129,10 +152,12 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
     while decoder.receive_frame(&mut decoded).is_ok() {
         if scaler.run(&decoded, &mut rgba_frame).is_ok() {
             if !send_frame(&decoded, &rgba_frame, &mut frame_idx, tb) {
+                info!("receiver dropped during flush, stopping");
                 return;
             }
         }
     }
 
+    info!(total_frames = frame_idx, "decode finished");
     let _ = tx.send(None);
 }

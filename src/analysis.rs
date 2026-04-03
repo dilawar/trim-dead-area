@@ -1,3 +1,5 @@
+use tracing::{debug, trace};
+
 use crate::decoder::VideoFrame;
 
 /// Side length (in pixels) of each analysis block.
@@ -30,6 +32,7 @@ impl Default for MotionAnalyzer {
 
 impl MotionAnalyzer {
     pub fn reset(&mut self) {
+        debug!("motion analyzer reset");
         *self = Self::default();
     }
 
@@ -47,6 +50,14 @@ impl MotionAnalyzer {
 
         // Re-initialise if this is the first frame or if resolution changed.
         if self.frame_width != frame.width || self.frame_height != frame.height {
+            debug!(
+                width = w,
+                height = h,
+                cols,
+                rows,
+                block_size = BLOCK,
+                "motion analyzer initialised"
+            );
             self.prev_gray = vec![0u8; w * h];
             self.motion_map = vec![0.0f32; cols * rows];
             self.cols = cols;
@@ -82,7 +93,9 @@ impl MotionAnalyzer {
                 }
 
                 let slot = &mut self.motion_map[by * cols + bx];
-                *slot = 0.95 * *slot + 0.05 * (sum as f32 / n);
+                let mad = sum as f32 / n;
+                trace!(by, bx, mad, ema = *slot, "block update");
+                *slot = 0.95 * *slot + 0.05 * mad;
             }
         }
         self.prev_gray = gray;
@@ -115,6 +128,7 @@ impl MotionAnalyzer {
         }
 
         if !found {
+            trace!(threshold, "no active blocks above threshold");
             return None;
         }
 
@@ -122,6 +136,8 @@ impl MotionAnalyzer {
         let py = (min_row * BLOCK) as u32;
         let pw = ((max_col + 1) * BLOCK).min(w) as u32 - px;
         let ph = ((max_row + 1) * BLOCK).min(h) as u32 - py;
+
+        trace!(px, py, pw, ph, threshold, "active bbox");
         Some([px, py, pw, ph])
     }
 }

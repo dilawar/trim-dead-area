@@ -4,6 +4,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
+use tracing::{debug, info, warn};
 
 use crate::analysis::MotionAnalyzer;
 use crate::decoder::{decode_video, VideoFrame};
@@ -49,6 +50,7 @@ impl App {
     }
 
     pub fn open_file(&mut self, path: PathBuf) {
+        info!(path = %path.display(), "opening file");
         let (tx, rx) = mpsc::sync_channel(30);
         let path_clone = path.clone();
         thread::spawn(move || decode_video(path_clone, tx));
@@ -74,11 +76,14 @@ impl App {
 
     fn toggle_play_pause(&mut self) {
         if self.playing {
-            self.paused_at = Some(self.video_time());
+            let t = self.video_time();
+            self.paused_at = Some(t);
             self.playing = false;
+            info!(at_secs = t, "playback paused");
         } else if let Some(paused) = self.paused_at.take() {
             self.play_start = Some(Instant::now() - Duration::from_secs_f64(paused));
             self.playing = true;
+            info!(from_secs = paused, "playback resumed");
         }
     }
 
@@ -125,6 +130,7 @@ impl App {
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    warn!("decoder thread disconnected unexpectedly");
                     self.playing = false;
                     break;
                 }
@@ -138,7 +144,11 @@ impl App {
 
     fn upload_frame(&mut self, ctx: &egui::Context, frame: VideoFrame) {
         // Run motion analysis; update the active region bounding box.
-        self.active_region = self.motion_analyzer.update(&frame, self.variance_threshold);
+        let new_region = self.motion_analyzer.update(&frame, self.variance_threshold);
+        if new_region != self.active_region {
+            debug!(region = ?new_region, "active region changed");
+            self.active_region = new_region;
+        }
 
         // Always upload the full frame — cropping is handled via UV at draw time.
         let image = ColorImage::from_rgba_unmultiplied(
