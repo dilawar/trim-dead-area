@@ -476,7 +476,11 @@ impl eframe::App for App {
                 }
 
                 ui.add_enabled_ui(self.file_path.is_some(), |ui| {
-                    if ui.button("Trim Dead Region").clicked() {
+                    let go = egui::Button::new(
+                        egui::RichText::new("Go").color(egui::Color32::WHITE).strong(),
+                    )
+                    .fill(egui::Color32::from_rgb(34, 139, 34));
+                    if ui.add(go).clicked() {
                         self.start_trim();
                     }
                 });
