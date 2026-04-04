@@ -57,8 +57,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(_cc: &eframe::CreationContext) -> Self {
-        Self {
+    pub fn new(_cc: &eframe::CreationContext, initial_file: Option<PathBuf>) -> Self {
+        let mut app = Self {
             file_path: None,
             texture: None,
             frame_rx: None,
@@ -74,7 +74,11 @@ impl App {
             waiting_to_show_dialog: false,
             crop_dialog: CropDialog::Hidden,
             export_rx: None,
+        };
+        if let Some(path) = initial_file {
+            app.open_file(path);
         }
+        app
     }
 
     pub fn open_file(&mut self, path: PathBuf) {

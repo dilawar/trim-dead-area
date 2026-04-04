@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use tracing::info;
 use trim_dead_area::app::App;
 
@@ -11,6 +13,8 @@ fn main() -> eframe::Result {
 
     info!("starting trim-dead-area v{}", env!("CARGO_PKG_VERSION"));
 
+    let initial_file: Option<PathBuf> = std::env::args().nth(1).map(PathBuf::from);
+
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Trim Dead Area")
@@ -21,6 +25,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Trim Dead Area",
         native_options,
-        Box::new(|cc| Ok(Box::new(App::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, initial_file)))),
     )
 }
