@@ -244,6 +244,11 @@ impl App {
         loop {
             match rx.try_recv() {
                 Ok(Some(frame)) => {
+                    // duration_secs is only set on the first frame; capture it
+                    // before overwriting latest, otherwise it gets discarded.
+                    if let Some(d) = frame.duration_secs {
+                        self.video_duration = Some(d);
+                    }
                     latest = Some(frame);
                 }
                 Ok(None) => {
@@ -261,9 +266,6 @@ impl App {
 
         if let Some(frame) = latest {
             self.current_pts = frame.pts_secs;
-            if let Some(d) = frame.duration_secs {
-                self.video_duration = Some(d);
-            }
             self.upload_frame(ctx, frame);
         }
 
