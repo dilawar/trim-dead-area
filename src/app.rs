@@ -412,10 +412,13 @@ impl App {
                                     Some(format!("{stem}_cropped.{ext}"))
                                 })
                                 .unwrap_or_else(|| "cropped.mp4".into());
-                            if let Some(output) = rfd::FileDialog::new()
+                            let mut dialog = rfd::FileDialog::new()
                                 .add_filter("MP4 video", &["mp4"])
-                                .set_file_name(&default_name)
-                                .save_file()
+                                .set_file_name(&default_name);
+                            if let Some(dir) = self.file_path.as_deref().and_then(|p| p.parent()) {
+                                dialog = dialog.set_directory(dir);
+                            }
+                            if let Some(output) = dialog.save_file()
                             {
                                 action = Some(Action::StartExport {
                                     region: [x, y, w, h],
