@@ -41,8 +41,7 @@ struct Cli {
     ///   percentile:<P>     — trim P% from each edge (e.g. percentile:5)
     ///   density-filter:<N> — require ≥ N active blocks per row/col (e.g. density-filter:2)
     ///   erosion:<N>        — require ≥ N active 4-neighbours (e.g. erosion:1)
-    #[arg(long, value_name = "METHOD", default_value = "union",
-          value_parser = parse_bbox_method)]
+    #[arg(long, value_name = "METHOD", default_value = "union")]
     bbox_method: BboxMethod,
 }
 
@@ -56,38 +55,6 @@ fn parse_analysis_fps(s: &str) -> Result<f32, String> {
     Ok(n)
 }
 
-fn parse_bbox_method(s: &str) -> Result<BboxMethod, String> {
-    if s.eq_ignore_ascii_case("union") {
-        return Ok(BboxMethod::Union);
-    }
-    if let Some(rest) = s.strip_prefix("percentile:") {
-        let p: f32 = rest
-            .parse()
-            .map_err(|_| format!("percentile value '{rest}' is not a valid number"))?;
-        if !(0.0..50.0).contains(&p) {
-            return Err(format!("percentile {p} is out of range (0–49.9)"));
-        }
-        return Ok(BboxMethod::Percentile(p));
-    }
-    if let Some(rest) = s.strip_prefix("density-filter:") {
-        let n: usize = rest
-            .parse()
-            .map_err(|_| format!("density-filter value '{rest}' is not a valid integer"))?;
-        return Ok(BboxMethod::DensityFilter(n));
-    }
-    if let Some(rest) = s.strip_prefix("erosion:") {
-        let n: usize = rest
-            .parse()
-            .map_err(|_| format!("erosion value '{rest}' is not a valid integer"))?;
-        if n > 4 {
-            return Err(format!("erosion {n} is out of range (0–4)"));
-        }
-        return Ok(BboxMethod::Erosion(n));
-    }
-    Err(format!(
-        "unknown bbox method '{s}'. Expected: union, percentile:<P>, density-filter:<N>, erosion:<N>"
-    ))
-}
 
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
@@ -126,103 +93,6 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── parse_bbox_method ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_parse_union_lowercase() {
-        assert_eq!(parse_bbox_method("union"), Ok(BboxMethod::Union));
-    }
-
-    #[test]
-    fn test_parse_union_uppercase() {
-        // Case-insensitive.
-        assert_eq!(parse_bbox_method("UNION"), Ok(BboxMethod::Union));
-    }
-
-    #[test]
-    fn test_parse_percentile_valid() {
-        assert_eq!(parse_bbox_method("percentile:5"), Ok(BboxMethod::Percentile(5.0)));
-    }
-
-    #[test]
-    fn test_parse_percentile_zero() {
-        assert_eq!(parse_bbox_method("percentile:0"), Ok(BboxMethod::Percentile(0.0)));
-    }
-
-    #[test]
-    fn test_parse_percentile_out_of_range() {
-        // p=50 is exactly on the boundary (valid range is 0–<50).
-        assert!(parse_bbox_method("percentile:50").is_err());
-    }
-
-    #[test]
-    fn test_parse_percentile_negative() {
-        assert!(parse_bbox_method("percentile:-1").is_err());
-    }
-
-    #[test]
-    fn test_parse_percentile_not_a_number() {
-        assert!(parse_bbox_method("percentile:abc").is_err());
-    }
-
-    #[test]
-    fn test_parse_density_filter_valid() {
-        assert_eq!(
-            parse_bbox_method("density-filter:2"),
-            Ok(BboxMethod::DensityFilter(2))
-        );
-    }
-
-    #[test]
-    fn test_parse_density_filter_zero() {
-        assert_eq!(
-            parse_bbox_method("density-filter:0"),
-            Ok(BboxMethod::DensityFilter(0))
-        );
-    }
-
-    #[test]
-    fn test_parse_density_filter_not_a_number() {
-        assert!(parse_bbox_method("density-filter:x").is_err());
-    }
-
-    #[test]
-    fn test_parse_erosion_valid() {
-        assert_eq!(parse_bbox_method("erosion:1"), Ok(BboxMethod::Erosion(1)));
-    }
-
-    #[test]
-    fn test_parse_erosion_zero() {
-        assert_eq!(parse_bbox_method("erosion:0"), Ok(BboxMethod::Erosion(0)));
-    }
-
-    #[test]
-    fn test_parse_erosion_max() {
-        assert_eq!(parse_bbox_method("erosion:4"), Ok(BboxMethod::Erosion(4)));
-    }
-
-    #[test]
-    fn test_parse_erosion_out_of_range() {
-        assert!(parse_bbox_method("erosion:5").is_err());
-    }
-
-    #[test]
-    fn test_parse_erosion_not_a_number() {
-        assert!(parse_bbox_method("erosion:x").is_err());
-    }
-
-    #[test]
-    fn test_parse_unknown_method() {
-        assert!(parse_bbox_method("foo").is_err());
-    }
-
-    #[test]
-    fn test_parse_empty_string() {
-        assert!(parse_bbox_method("").is_err());
-    }
-
-    // ── parse_analysis_fps ───────────────────────────────────────────────────
 
     #[test]
     fn test_parse_fps_valid() {

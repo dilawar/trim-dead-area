@@ -63,6 +63,51 @@ pub enum BboxMethod {
     Erosion(usize),
 }
 
+impl std::str::FromStr for BboxMethod {
+    type Err = String;
+
+    /// Parse a CLI/config string into a [`BboxMethod`].
+    ///
+    /// Accepted forms:
+    /// - `union`
+    /// - `percentile:<P>` — e.g. `percentile:5`  (P in 0..50)
+    /// - `density-filter:<N>` — e.g. `density-filter:2`
+    /// - `erosion:<N>` — e.g. `erosion:1`  (N in 0..=4)
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("union") {
+            return Ok(BboxMethod::Union);
+        }
+        if let Some(rest) = s.strip_prefix("percentile:") {
+            let p: f32 = rest
+                .parse()
+                .map_err(|_| format!("percentile value '{rest}' is not a valid number"))?;
+            if !(0.0..50.0).contains(&p) {
+                return Err(format!("percentile {p} is out of range (0–49.9)"));
+            }
+            return Ok(BboxMethod::Percentile(p));
+        }
+        if let Some(rest) = s.strip_prefix("density-filter:") {
+            let n: usize = rest
+                .parse()
+                .map_err(|_| format!("density-filter value '{rest}' is not a valid integer"))?;
+            return Ok(BboxMethod::DensityFilter(n));
+        }
+        if let Some(rest) = s.strip_prefix("erosion:") {
+            let n: usize = rest
+                .parse()
+                .map_err(|_| format!("erosion value '{rest}' is not a valid integer"))?;
+            if n > 4 {
+                return Err(format!("erosion {n} is out of range (0–4)"));
+            }
+            return Ok(BboxMethod::Erosion(n));
+        }
+        Err(format!(
+            "unknown bbox method '{s}'. \
+             Expected: union, percentile:<P>, density-filter:<N>, erosion:<N>"
+        ))
+    }
+}
+
 /// Compute the active-region bounding box from a flat block-score map.
 ///
 /// * `map`       — per-block scores, row-major, length `cols × rows`.
@@ -586,5 +631,96 @@ mod tests {
             bbox4(&[(1, 1), (1, 2), (2, 1), (2, 2)], BboxMethod::Erosion(3)),
             None
         );
+    }
+
+    // ── BboxMethod::from_str (FromStr) ───────────────────────────────────────
+
+    fn parse(s: &str) -> Result<BboxMethod, String> {
+        s.parse()
+    }
+
+    #[test]
+    fn test_parse_union_lowercase() {
+        assert_eq!(parse("union"), Ok(BboxMethod::Union));
+    }
+
+    #[test]
+    fn test_parse_union_uppercase() {
+        assert_eq!(parse("UNION"), Ok(BboxMethod::Union));
+    }
+
+    #[test]
+    fn test_parse_percentile_valid() {
+        assert_eq!(parse("percentile:5"), Ok(BboxMethod::Percentile(5.0)));
+    }
+
+    #[test]
+    fn test_parse_percentile_zero() {
+        assert_eq!(parse("percentile:0"), Ok(BboxMethod::Percentile(0.0)));
+    }
+
+    #[test]
+    fn test_parse_percentile_out_of_range() {
+        assert!(parse("percentile:50").is_err());
+    }
+
+    #[test]
+    fn test_parse_percentile_negative() {
+        assert!(parse("percentile:-1").is_err());
+    }
+
+    #[test]
+    fn test_parse_percentile_not_a_number() {
+        assert!(parse("percentile:abc").is_err());
+    }
+
+    #[test]
+    fn test_parse_density_filter_valid() {
+        assert_eq!(parse("density-filter:2"), Ok(BboxMethod::DensityFilter(2)));
+    }
+
+    #[test]
+    fn test_parse_density_filter_zero() {
+        assert_eq!(parse("density-filter:0"), Ok(BboxMethod::DensityFilter(0)));
+    }
+
+    #[test]
+    fn test_parse_density_filter_not_a_number() {
+        assert!(parse("density-filter:x").is_err());
+    }
+
+    #[test]
+    fn test_parse_erosion_valid() {
+        assert_eq!(parse("erosion:1"), Ok(BboxMethod::Erosion(1)));
+    }
+
+    #[test]
+    fn test_parse_erosion_zero() {
+        assert_eq!(parse("erosion:0"), Ok(BboxMethod::Erosion(0)));
+    }
+
+    #[test]
+    fn test_parse_erosion_max() {
+        assert_eq!(parse("erosion:4"), Ok(BboxMethod::Erosion(4)));
+    }
+
+    #[test]
+    fn test_parse_erosion_out_of_range() {
+        assert!(parse("erosion:5").is_err());
+    }
+
+    #[test]
+    fn test_parse_erosion_not_a_number() {
+        assert!(parse("erosion:x").is_err());
+    }
+
+    #[test]
+    fn test_parse_unknown_method() {
+        assert!(parse("foo").is_err());
+    }
+
+    #[test]
+    fn test_parse_empty_string() {
+        assert!(parse("").is_err());
     }
 }
