@@ -6,7 +6,7 @@ use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use tracing::{debug, info, warn};
 
 use crate::analysis::MotionAnalyzer;
-use crate::decoder::{decode_video, decode_video_with_analysis, VideoFrame};
+use crate::decoder::{decode_video, decode_video_with_analysis, AnalysisMode, VideoFrame};
 use crate::writer::crop_video_async;
 
 // ── Application state ────────────────────────────────────────────────────────
@@ -75,10 +75,14 @@ pub struct App {
 
     /// Threshold value that was used to start the current analysis run.
     last_threshold: f32,
-    /// Frames per second of video time sampled for analysis (1–30).
+    /// Frames per second of video time sampled for analysis (1–30). Only used in Full mode.
     pub analysis_fps: f32,
     /// Analysis FPS value used to start the current run.
     last_analysis_fps: f32,
+    /// Whether to use fast (I-frame only) or full analysis.
+    pub analysis_mode: AnalysisMode,
+    /// Analysis mode used to start the current run.
+    last_analysis_mode: AnalysisMode,
     /// Show "settings changed – restart?" prompt.
     restart_prompt: bool,
 }
@@ -107,6 +111,8 @@ impl App {
             last_threshold: 5.0,
             analysis_fps,
             last_analysis_fps: analysis_fps,
+            analysis_mode: AnalysisMode::Full,
+            last_analysis_mode: AnalysisMode::Full,
             restart_prompt: false,
         };
         if let Some(path) = initial_file {
@@ -151,8 +157,13 @@ impl App {
         info!(path = %path.display(), threshold = self.variance_threshold, "starting trim");
 
         let (tx, rx) = mpsc::sync_channel(30);
-        let analysis_rx =
-            decode_video_with_analysis(path, tx, self.variance_threshold, self.analysis_fps);
+        let analysis_rx = decode_video_with_analysis(
+            path,
+            tx,
+            self.variance_threshold,
+            self.analysis_fps,
+            self.analysis_mode,
+        );
 
         self.state = AppState::Trimming;
         self.frame_rx = Some(rx);
@@ -168,6 +179,7 @@ impl App {
         self.preview_rx = None;
         self.last_threshold = self.variance_threshold;
         self.last_analysis_fps = self.analysis_fps;
+        self.last_analysis_mode = self.analysis_mode;
         self.restart_prompt = false;
     }
 
@@ -449,6 +461,7 @@ impl App {
             // Don't prompt again unless the settings change again.
             self.last_threshold = self.variance_threshold;
             self.last_analysis_fps = self.analysis_fps;
+            self.last_analysis_mode = self.analysis_mode;
             self.restart_prompt = false;
         }
     }
@@ -471,11 +484,12 @@ impl eframe::App for App {
             self.open_file(path);
         }
 
-        // Detect MAD threshold or analysis FPS change while analysis is running.
+        // Detect settings change while analysis is running.
         if self.is_trimming()
             && !self.restart_prompt
             && ((self.variance_threshold - self.last_threshold).abs() > f32::EPSILON
-                || (self.analysis_fps - self.last_analysis_fps).abs() > f32::EPSILON)
+                || (self.analysis_fps - self.last_analysis_fps).abs() > f32::EPSILON
+                || self.analysis_mode != self.last_analysis_mode)
         {
             self.restart_prompt = true;
         }
@@ -549,14 +563,24 @@ impl eframe::App for App {
             });
 
             ui.horizontal(|ui| {
-                ui.label("Analysis rate:");
-                ui.add(
-                    egui::Slider::new(&mut self.analysis_fps, 1.0..=30.0)
-                        .step_by(1.0)
-                        .fixed_decimals(0)
-                        .suffix(" fps"),
-                );
-                ui.weak("(frames per second of video time sampled for analysis)");
+                ui.label("Analysis mode:");
+                ui.radio_value(&mut self.analysis_mode, AnalysisMode::Full, "Full");
+                ui.radio_value(&mut self.analysis_mode, AnalysisMode::Fast, "Fast (I-frames only)");
+                ui.add_space(8.0);
+                ui.add_enabled_ui(self.analysis_mode == AnalysisMode::Full, |ui| {
+                    ui.label("Rate:");
+                    ui.add(
+                        egui::Slider::new(&mut self.analysis_fps, 1.0..=30.0)
+                            .step_by(1.0)
+                            .fixed_decimals(0)
+                            .suffix(" fps"),
+                    );
+                });
+                if self.analysis_mode == AnalysisMode::Fast {
+                    ui.weak("(keyframes only — much faster, accuracy depends on GOP size)");
+                } else {
+                    ui.weak("(video time sampled per second)");
+                }
             });
 
             ui.add_space(6.0);

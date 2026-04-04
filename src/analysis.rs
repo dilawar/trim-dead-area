@@ -115,19 +115,33 @@ impl FullVideoAnalyzer {
     pub fn update(&mut self, frame: &VideoFrame) {
         let w = frame.width as usize;
         let h = frame.height as usize;
+        let gray = to_gray(&frame.rgba);
+        self.update_gray(w, h, frame.width, frame.height, gray);
+    }
+
+    /// Analyse a frame using a pre-extracted luma (Y) plane.
+    ///
+    /// `y` must be a contiguous row-major byte slice of length `w * h` —
+    /// callers are responsible for de-striding before passing it in.
+    /// This avoids the RGBA conversion entirely, which is the dominant cost
+    /// in [`update`] for large frames.
+    pub fn update_y(&mut self, y: Vec<u8>, width: u32, height: u32) {
+        self.update_gray(width as usize, height as usize, width, height, y);
+    }
+
+    fn update_gray(&mut self, w: usize, h: usize, fw: u32, fh: u32, gray: Vec<u8>) {
         let cols = w.div_ceil(BLOCK);
         let rows = h.div_ceil(BLOCK);
 
-        if self.frame_width != frame.width || self.frame_height != frame.height {
+        if self.frame_width != fw || self.frame_height != fh {
             self.prev_gray = vec![0u8; w * h];
             self.mad_sum = vec![0.0f64; cols * rows];
             self.cols = cols;
             self.rows = rows;
-            self.frame_width = frame.width;
-            self.frame_height = frame.height;
+            self.frame_width = fw;
+            self.frame_height = fh;
         }
 
-        let gray = to_gray(&frame.rgba);
         for by in 0..rows {
             for bx in 0..cols {
                 self.mad_sum[by * cols + bx] += block_mad(&gray, &self.prev_gray, w, bx, by) as f64;

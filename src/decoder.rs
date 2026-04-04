@@ -162,23 +162,39 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
     let _ = tx.send(None);
 }
 
+/// Controls how frames are sampled during analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisMode {
+    /// Decode every frame and sample at a fixed rate (`analysis_fps` frames per
+    /// second of video time). Accurate but CPU-intensive.
+    Full,
+    /// Decode only I-frames (keyframes) by setting `skip_frame = NonIntra` on
+    /// the decoder. Typically 10–60× faster than `Full`; accuracy depends on
+    /// how often the source was keyframed (usually every 1–5 s).
+    Fast,
+}
+
 /// Like [`decode_video`] but also runs [`crate::analysis::FullVideoAnalyzer`]
 /// inline on the same thread. The analysis result is sent over the returned
 /// channel immediately after the last display frame, so it arrives at the UI
 /// with essentially zero extra lag after playback ends.
-/// Like [`decode_video`] but samples the video at `analysis_fps` frames per
-/// second of video time for analysis, regardless of the source frame rate.
+///
+/// In [`AnalysisMode::Full`] every frame is decoded and sampled at `analysis_fps`
+/// frames per second of video time. In [`AnalysisMode::Fast`] the decoder is
+/// told to skip non-intra frames so only keyframes are decoded and analysed.
 pub fn decode_video_with_analysis(
     path: PathBuf,
     display_tx: SyncSender<Option<VideoFrame>>,
     threshold: f32,
     analysis_fps: f32,
+    mode: AnalysisMode,
 ) -> Receiver<Option<[u32; 4]>> {
     use crate::analysis::FullVideoAnalyzer;
 
     let (result_tx, result_rx) = mpsc::channel();
 
     std::thread::spawn(move || {
+        use ffmpeg::codec::discard::Discard;
         use ffmpeg::format::Pixel;
         use ffmpeg::media::Type;
         use ffmpeg::software::scaling::{context::Context as ScaleCtx, flag::Flags};
@@ -215,10 +231,17 @@ pub fn decode_video_with_analysis(
                 Ok(c) => c,
                 Err(e) => bail!(format!("codec context error: {e}")),
             };
-            let dec = match ctx.decoder().video() {
+            let mut dec = match ctx.decoder().video() {
                 Ok(d) => d,
                 Err(e) => bail!(format!("video decoder error: {e}")),
             };
+            if mode == AnalysisMode::Fast {
+                // Ask the codec to skip all non-intra (non-keyframe) frames.
+                // The demuxer still delivers every packet but the decoder
+                // silently drops B/P frames, emitting only I-frames.
+                dec.skip_frame(Discard::NonIntra);
+                info!("fast mode: decoder set to skip non-intra frames");
+            }
             (idx, tb, dec)
         };
 
@@ -239,37 +262,92 @@ pub fn decode_video_with_analysis(
         let mut decoded = ffmpeg::util::frame::video::Video::empty();
         let mut rgba_frame = ffmpeg::util::frame::video::Video::empty();
         let mut frame_idx: u64 = 0;
-        // PTS of the last frame fed to the analyser; initialised so the first frame is always analysed.
+        // Full mode only: PTS of the last analysed frame.
         let mut last_analysis_pts: f64 = f64::NEG_INFINITY;
         let analysis_interval = 1.0 / analysis_fps.max(0.1) as f64;
 
-        let make_frame = |decoded: &ffmpeg::util::frame::video::Video,
-                          rgba_frame: &ffmpeg::util::frame::video::Video,
+        // Extract a contiguous Y (luma) plane from a decoded frame, de-striding
+        // as necessary. Used by Fast mode to skip the sws_scale call entirely.
+        let extract_y = |dec: &ffmpeg::util::frame::video::Video| -> Vec<u8> {
+            let w = dec.width() as usize;
+            let h = dec.height() as usize;
+            let stride = dec.stride(0);
+            let raw = dec.data(0);
+            let mut y = Vec::with_capacity(w * h);
+            for row in 0..h {
+                let start = row * stride;
+                y.extend_from_slice(&raw[start..start + w]);
+            }
+            y
+        };
+
+        // Build a VideoFrame from an already-scaled RGBA frame (Full mode).
+        let make_frame = |dec: &ffmpeg::util::frame::video::Video,
+                          rgba: &ffmpeg::util::frame::video::Video,
                           frame_idx: &mut u64,
                           tb: f64|
          -> VideoFrame {
-            let pts_secs = decoded
+            let pts_secs = dec
                 .pts()
                 .map(|p| p as f64 * tb)
                 .unwrap_or_else(|| *frame_idx as f64 / 30.0);
-            let width = rgba_frame.width() as usize;
-            let height = rgba_frame.height() as usize;
-            let stride = rgba_frame.stride(0);
-            let raw = rgba_frame.data(0);
-            let mut rgba = Vec::with_capacity(width * height * 4);
+            let width = rgba.width() as usize;
+            let height = rgba.height() as usize;
+            let stride = rgba.stride(0);
+            let raw = rgba.data(0);
+            let mut rgba_buf = Vec::with_capacity(width * height * 4);
             for row in 0..height {
                 let start = row * stride;
-                rgba.extend_from_slice(&raw[start..start + width * 4]);
+                rgba_buf.extend_from_slice(&raw[start..start + width * 4]);
             }
             debug!(frame = *frame_idx, pts_secs, "decoded frame");
             *frame_idx += 1;
             VideoFrame {
-                rgba,
+                rgba: rgba_buf,
                 width: width as u32,
                 height: height as u32,
                 pts_secs,
             }
         };
+
+        // Process one decoded frame: analyse it and try to send it for display.
+        // Returns false when the display receiver has disconnected (caller should stop).
+        macro_rules! process {
+            ($dec:expr) => {{
+                let pts_secs = $dec
+                    .pts()
+                    .map(|p| p as f64 * tb)
+                    .unwrap_or_else(|| frame_idx as f64 / 30.0);
+
+                if mode == AnalysisMode::Fast {
+                    // Fast path: extract Y plane directly — no sws_scale for analysis.
+                    // Every frame reaching here is a keyframe (decoder skip_frame=NonIntra).
+                    let y = extract_y($dec);
+                    analyzer.update_y(y, $dec.width(), $dec.height());
+                }
+
+                // Convert to RGBA for display (and for analysis in Full mode).
+                if scaler.run($dec, &mut rgba_frame).is_err() {
+                    frame_idx += 1;
+                    continue;  // skip this frame
+                }
+                let frame = make_frame($dec, &rgba_frame, &mut frame_idx, tb);
+
+                if mode == AnalysisMode::Full && pts_secs - last_analysis_pts >= analysis_interval {
+                    analyzer.update(&frame);
+                    last_analysis_pts = pts_secs;
+                }
+
+                match display_tx.try_send(Some(frame)) {
+                    Ok(()) | Err(mpsc::TrySendError::Full(_)) => true,
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        info!("display receiver dropped, stopping decode");
+                        let _ = result_tx.send(analyzer.active_bbox(threshold));
+                        false
+                    }
+                }
+            }};
+        }
 
         for (stream, packet) in ictx.packets() {
             if stream.index() != stream_idx {
@@ -280,44 +358,16 @@ pub fn decode_video_with_analysis(
                 continue;
             }
             while decoder.receive_frame(&mut decoded).is_ok() {
-                if let Err(e) = scaler.run(&decoded, &mut rgba_frame) {
-                    warn!("scaler run error: {e}");
-                    continue;
-                }
-                let frame = make_frame(&decoded, &rgba_frame, &mut frame_idx, tb);
-                if frame.pts_secs - last_analysis_pts >= analysis_interval {
-                    analyzer.update(&frame);
-                    last_analysis_pts = frame.pts_secs;
-                }
-                match display_tx.try_send(Some(frame)) {
-                    Ok(()) => {}
-                    Err(mpsc::TrySendError::Full(_)) => {} // UI busy — drop display frame, analysis already done
-                    Err(mpsc::TrySendError::Disconnected(_)) => {
-                        info!("display receiver dropped, stopping decode");
-                        let _ = result_tx.send(analyzer.active_bbox(threshold));
-                        return;
-                    }
+                if !process!(&decoded) {
+                    return;
                 }
             }
         }
 
         let _ = decoder.send_eof();
         while decoder.receive_frame(&mut decoded).is_ok() {
-            if scaler.run(&decoded, &mut rgba_frame).is_ok() {
-                let frame = make_frame(&decoded, &rgba_frame, &mut frame_idx, tb);
-                if frame.pts_secs - last_analysis_pts >= analysis_interval {
-                    analyzer.update(&frame);
-                    last_analysis_pts = frame.pts_secs;
-                }
-                match display_tx.try_send(Some(frame)) {
-                    Ok(()) => {}
-                    Err(mpsc::TrySendError::Full(_)) => {}
-                    Err(mpsc::TrySendError::Disconnected(_)) => {
-                        info!("display receiver dropped during flush, stopping");
-                        let _ = result_tx.send(analyzer.active_bbox(threshold));
-                        return;
-                    }
-                }
+            if !process!(&decoded) {
+                return;
             }
         }
 
