@@ -105,7 +105,11 @@ impl App {
         fast: bool,
         bbox_method: BboxMethod,
     ) -> Self {
-        let analysis_mode = if fast { AnalysisMode::Fast } else { AnalysisMode::Full };
+        let analysis_mode = if fast {
+            AnalysisMode::Fast
+        } else {
+            AnalysisMode::Full
+        };
         let mut app = Self {
             state: AppState::Idle,
             file_path: None,
@@ -357,7 +361,9 @@ impl App {
     }
 
     fn upload_frame(&mut self, ctx: &egui::Context, frame: VideoFrame) {
-        let new_region = self.motion_analyzer.update(&frame, self.variance_threshold, self.bbox_method);
+        let new_region =
+            self.motion_analyzer
+                .update(&frame, self.variance_threshold, self.bbox_method);
         if new_region != self.active_region {
             debug!(region = ?new_region, "active region changed");
             self.active_region = new_region;
@@ -557,8 +563,12 @@ impl eframe::App for App {
                     ui.label(format!("  {name}"));
                 }
 
-                if matches!(self.state, AppState::Trimming | AppState::AnalysisPending | AppState::Previewing) {
-                    let progress = self.video_duration
+                if matches!(
+                    self.state,
+                    AppState::Trimming | AppState::AnalysisPending | AppState::Previewing
+                ) {
+                    let progress = self
+                        .video_duration
                         .filter(|&d| d > 0.0)
                         .map(|d| (self.current_pts / d).clamp(0.0, 1.0) as f32)
                         .unwrap_or(0.0);
@@ -620,7 +630,8 @@ impl eframe::App for App {
                             }
                             if let Some(output) = dialog.save_file() {
                                 if let Some(input) = &self.file_path {
-                                    let rx = crop_video_async(input.clone(), output.clone(), region);
+                                    let rx =
+                                        crop_video_async(input.clone(), output.clone(), region);
                                     self.export_rx = Some(rx);
                                     self.crop_dialog = CropDialog::Exporting { region, output };
                                 }
@@ -657,7 +668,11 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.label("Analysis mode:");
                 ui.radio_value(&mut self.analysis_mode, AnalysisMode::Full, "Full");
-                ui.radio_value(&mut self.analysis_mode, AnalysisMode::Fast, "Fast (I-frames only)");
+                ui.radio_value(
+                    &mut self.analysis_mode,
+                    AnalysisMode::Fast,
+                    "Fast (I-frames only)",
+                );
                 ui.add_space(8.0);
                 ui.add_enabled_ui(self.analysis_mode == AnalysisMode::Full, |ui| {
                     ui.label("Rate:");
@@ -789,14 +804,10 @@ impl eframe::App for App {
 
                         ui.add_space(8.0);
                         let desc = match self.bbox_method {
-                            BboxMethod::Union =>
-                                "strict union — every active block counts",
-                            BboxMethod::Percentile(_) =>
-                                "trims coordinate outliers from each edge",
-                            BboxMethod::DensityFilter(_) =>
-                                "requires dense rows/columns",
-                            BboxMethod::Erosion(_) =>
-                                "requires active neighbours",
+                            BboxMethod::Union => "strict union — every active block counts",
+                            BboxMethod::Percentile(_) => "trims coordinate outliers from each edge",
+                            BboxMethod::DensityFilter(_) => "requires dense rows/columns",
+                            BboxMethod::Erosion(_) => "requires active neighbours",
                         };
                         ui.weak(desc);
                     });
@@ -836,15 +847,18 @@ impl eframe::App for App {
                 // ── Side-by-side ────────────────────────────────────────────
                 let gap = 6.0;
                 let half_w = (avail.width() - gap) / 2.0;
-                let left_avail = egui::Rect::from_min_size(avail.min, egui::vec2(half_w, avail.height()));
+                let left_avail =
+                    egui::Rect::from_min_size(avail.min, egui::vec2(half_w, avail.height()));
                 let right_avail = egui::Rect::from_min_size(
                     avail.min + egui::vec2(half_w + gap, 0.0),
                     egui::vec2(half_w, avail.height()),
                 );
 
                 // Left — full frame
-                let left_scale = (left_avail.width() / full_size.x).min(left_avail.height() / full_size.y);
-                let left_disp = egui::Rect::from_center_size(left_avail.center(), full_size * left_scale);
+                let left_scale =
+                    (left_avail.width() / full_size.x).min(left_avail.height() / full_size.y);
+                let left_disp =
+                    egui::Rect::from_center_size(left_avail.center(), full_size * left_scale);
                 let full_uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                 painter.image(texture.id(), left_disp, full_uv, egui::Color32::WHITE);
 
@@ -865,11 +879,14 @@ impl eframe::App for App {
                 // Right — cropped sub-rect via UV
                 let crop_uv = egui::Rect::from_min_max(
                     egui::pos2(cx as f32 / full_size.x, cy as f32 / full_size.y),
-                    egui::pos2((cx + cw) as f32 / full_size.x, (cy + ch) as f32 / full_size.y),
+                    egui::pos2(
+                        (cx + cw) as f32 / full_size.x,
+                        (cy + ch) as f32 / full_size.y,
+                    ),
                 );
                 let crop_natural = egui::vec2(cw as f32, ch as f32);
-                let right_scale =
-                    (right_avail.width() / crop_natural.x).min(right_avail.height() / crop_natural.y);
+                let right_scale = (right_avail.width() / crop_natural.x)
+                    .min(right_avail.height() / crop_natural.y);
                 let right_disp =
                     egui::Rect::from_center_size(right_avail.center(), crop_natural * right_scale);
                 painter.image(texture.id(), right_disp, crop_uv, egui::Color32::WHITE);
@@ -894,7 +911,11 @@ impl eframe::App for App {
 
                 // Vertical divider
                 let mid_x = avail.left() + half_w + gap / 2.0;
-                painter.vline(mid_x, avail.y_range(), egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
+                painter.vline(
+                    mid_x,
+                    avail.y_range(),
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(70)),
+                );
 
                 // Yellow live region on left panel (during trimming)
                 if let Some([rx, ry, rw, rh]) = self.active_region {
@@ -902,7 +923,12 @@ impl eframe::App for App {
                         left_disp.min + egui::vec2(rx as f32 * sx, ry as f32 * sy),
                         egui::vec2(rw as f32 * sx, rh as f32 * sy),
                     );
-                    painter.rect_stroke(r, 0.0, egui::Stroke::new(2.0, egui::Color32::YELLOW), egui::StrokeKind::Outside);
+                    painter.rect_stroke(
+                        r,
+                        0.0,
+                        egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                        egui::StrokeKind::Outside,
+                    );
                 }
             } else {
                 // ── Single panel ─────────────────────────────────────────────

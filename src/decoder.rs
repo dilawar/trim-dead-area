@@ -131,7 +131,11 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
         }
 
         debug!(frame = *frame_idx, pts_secs, "decoded frame");
-        let duration_secs = if *frame_idx == 0 { container_duration } else { None };
+        let duration_secs = if *frame_idx == 0 {
+            container_duration
+        } else {
+            None
+        };
         *frame_idx += 1;
 
         tx.send(Some(VideoFrame {
@@ -329,7 +333,11 @@ pub fn decode_video_with_analysis(
                 rgba_buf.extend_from_slice(&raw[start..start + width * 4]);
             }
             debug!(frame = *frame_idx, pts_secs, "decoded frame");
-            let duration_secs = if *frame_idx == 0 { container_duration } else { None };
+            let duration_secs = if *frame_idx == 0 {
+                container_duration
+            } else {
+                None
+            };
             *frame_idx += 1;
             VideoFrame {
                 rgba: rgba_buf,
@@ -359,7 +367,7 @@ pub fn decode_video_with_analysis(
                 // Convert to RGBA for display (and for analysis in Full mode).
                 if scaler.run($dec, &mut rgba_frame).is_err() {
                     frame_idx += 1;
-                    continue;  // skip this frame
+                    continue; // skip this frame
                 }
                 let frame = make_frame($dec, &rgba_frame, &mut frame_idx, tb);
 

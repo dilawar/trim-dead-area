@@ -47,7 +47,9 @@ struct Cli {
 }
 
 fn parse_analysis_fps(s: &str) -> Result<f32, String> {
-    let n: f32 = s.parse().map_err(|_| format!("'{s}' is not a valid number"))?;
+    let n: f32 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a valid number"))?;
     if !(1.0..=30.0).contains(&n) {
         return Err(format!("{n} is out of range (1–30)"));
     }

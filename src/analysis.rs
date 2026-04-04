@@ -31,7 +31,12 @@ impl MotionAnalyzer {
     /// Feed the next displayed frame. Returns the smallest bounding box
     /// `[x, y, w, h]` (pixel coords) covering every block whose EMA motion
     /// score ≥ `threshold`, or `None` while warming up.
-    pub fn update(&mut self, frame: &VideoFrame, threshold: f32, method: BboxMethod) -> Option<[u32; 4]> {
+    pub fn update(
+        &mut self,
+        frame: &VideoFrame,
+        threshold: f32,
+        method: BboxMethod,
+    ) -> Option<[u32; 4]> {
         let w = frame.width as usize;
         let h = frame.height as usize;
         let cols = w.div_ceil(BLOCK);
@@ -342,4 +347,3 @@ fn block_mad(gray: &[u8], prev: &[u8], stride: usize, bx: usize, by: usize) -> f
     }
     sum as f32 / n
 }
-

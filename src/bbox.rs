@@ -18,11 +18,12 @@ use crate::BLOCK;
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Strategy used when computing the active-region bounding box.
-#[derive(Copy, Clone, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub enum BboxMethod {
     /// Tight axis-aligned envelope of every block whose score ≥ threshold.
     /// One "hot" outlier anywhere in the frame will expand the box to include
     /// it.  This is the fastest method and the default.
+    #[default]
     Union,
 
     /// Trim `p` percent of active-block coordinates from each edge before
@@ -41,12 +42,6 @@ pub enum BboxMethod {
     /// 4-connected neighbours are also active.  Removes isolated hot spots
     /// while preserving large contiguous regions.
     Erosion(usize),
-}
-
-impl Default for BboxMethod {
-    fn default() -> Self {
-        BboxMethod::Union
-    }
 }
 
 /// Compute the active-region bounding box from a flat block-score map.
@@ -168,10 +163,18 @@ fn bbox_density_filter(
 ) -> Option<(usize, usize, usize, usize)> {
     // Count active blocks per row and per column.
     let row_counts: Vec<usize> = (0..rows)
-        .map(|by| (0..cols).filter(|&bx| map[by * cols + bx] >= threshold).count())
+        .map(|by| {
+            (0..cols)
+                .filter(|&bx| map[by * cols + bx] >= threshold)
+                .count()
+        })
         .collect();
     let col_counts: Vec<usize> = (0..cols)
-        .map(|bx| (0..rows).filter(|&by| map[by * cols + bx] >= threshold).count())
+        .map(|bx| {
+            (0..rows)
+                .filter(|&by| map[by * cols + bx] >= threshold)
+                .count()
+        })
         .collect();
 
     let qual_rows: Vec<usize> = (0..rows).filter(|&by| row_counts[by] >= min_n).collect();
@@ -204,10 +207,18 @@ fn bbox_erosion(
     // Erode: keep only blocks with enough active 4-neighbours.
     let neighbor_count = |bx: usize, by: usize| -> usize {
         let mut n = 0usize;
-        if bx > 0 && active[by * cols + bx - 1] { n += 1; }
-        if bx + 1 < cols && active[by * cols + bx + 1] { n += 1; }
-        if by > 0 && active[(by - 1) * cols + bx] { n += 1; }
-        if by + 1 < rows && active[(by + 1) * cols + bx] { n += 1; }
+        if bx > 0 && active[by * cols + bx - 1] {
+            n += 1;
+        }
+        if bx + 1 < cols && active[by * cols + bx + 1] {
+            n += 1;
+        }
+        if by > 0 && active[(by - 1) * cols + bx] {
+            n += 1;
+        }
+        if by + 1 < rows && active[(by + 1) * cols + bx] {
+            n += 1;
+        }
         n
     };
 
@@ -288,19 +299,28 @@ mod tests {
 
     #[test]
     fn test_single_block_percentile_zero() {
-        assert_eq!(bbox4(&[(1, 2)], BboxMethod::Percentile(0.0)), Some([16, 32, 16, 16]));
+        assert_eq!(
+            bbox4(&[(1, 2)], BboxMethod::Percentile(0.0)),
+            Some([16, 32, 16, 16])
+        );
     }
 
     /// With only 1 active block the trim is clamped to 0 — result unchanged.
     #[test]
     fn test_single_block_percentile_fifty() {
-        assert_eq!(bbox4(&[(1, 2)], BboxMethod::Percentile(50.0)), Some([16, 32, 16, 16]));
+        assert_eq!(
+            bbox4(&[(1, 2)], BboxMethod::Percentile(50.0)),
+            Some([16, 32, 16, 16])
+        );
     }
 
     #[test]
     fn test_single_block_density_filter_1() {
         // Row 2 has 1 active block ≥ 1; col 1 has 1 active block ≥ 1 → survives.
-        assert_eq!(bbox4(&[(1, 2)], BboxMethod::DensityFilter(1)), Some([16, 32, 16, 16]));
+        assert_eq!(
+            bbox4(&[(1, 2)], BboxMethod::DensityFilter(1)),
+            Some([16, 32, 16, 16])
+        );
     }
 
     #[test]
@@ -318,7 +338,10 @@ mod tests {
     #[test]
     fn test_single_block_erosion_0() {
         // Requiring 0 neighbours: block survives regardless.
-        assert_eq!(bbox4(&[(1, 2)], BboxMethod::Erosion(0)), Some([16, 32, 16, 16]));
+        assert_eq!(
+            bbox4(&[(1, 2)], BboxMethod::Erosion(0)),
+            Some([16, 32, 16, 16])
+        );
     }
 
     // ── Outlier rejection ────────────────────────────────────────────────────
@@ -331,7 +354,10 @@ mod tests {
     #[test]
     fn test_outlier_union_includes_outlier() {
         // Union stretches to include (0,0).
-        assert_eq!(bbox4(&outlier_active(), BboxMethod::Union), Some([0, 0, 48, 48]));
+        assert_eq!(
+            bbox4(&outlier_active(), BboxMethod::Union),
+            Some([0, 0, 48, 48])
+        );
     }
 
     #[test]
@@ -357,23 +383,34 @@ mod tests {
     // ── Fully active map ─────────────────────────────────────────────────────
 
     fn all_active_4x4() -> Vec<(usize, usize)> {
-        (0..4).flat_map(|by| (0..4).map(move |bx| (bx, by))).collect()
+        (0..4)
+            .flat_map(|by| (0..4).map(move |bx| (bx, by)))
+            .collect()
     }
 
     #[test]
     fn test_fully_active_union() {
-        assert_eq!(bbox4(&all_active_4x4(), BboxMethod::Union), Some([0, 0, 64, 64]));
+        assert_eq!(
+            bbox4(&all_active_4x4(), BboxMethod::Union),
+            Some([0, 0, 64, 64])
+        );
     }
 
     #[test]
     fn test_fully_active_density_filter() {
-        assert_eq!(bbox4(&all_active_4x4(), BboxMethod::DensityFilter(1)), Some([0, 0, 64, 64]));
+        assert_eq!(
+            bbox4(&all_active_4x4(), BboxMethod::DensityFilter(1)),
+            Some([0, 0, 64, 64])
+        );
     }
 
     #[test]
     fn test_fully_active_erosion_1() {
         // Every block in a 4×4 grid has ≥ 2 active neighbours → all survive.
-        assert_eq!(bbox4(&all_active_4x4(), BboxMethod::Erosion(1)), Some([0, 0, 64, 64]));
+        assert_eq!(
+            bbox4(&all_active_4x4(), BboxMethod::Erosion(1)),
+            Some([0, 0, 64, 64])
+        );
     }
 
     // ── DensityFilter: top-row strip ─────────────────────────────────────────
@@ -406,19 +443,27 @@ mod tests {
     }
 
     fn cluster_3x3() -> Vec<(usize, usize)> {
-        (1..=3).flat_map(|by| (1..=3).map(move |bx| (bx, by))).collect()
+        (1..=3)
+            .flat_map(|by| (1..=3).map(move |bx| (bx, by)))
+            .collect()
     }
 
     #[test]
     fn test_erosion_3x3_cluster_n1() {
         // All 9 blocks have ≥ 1 active neighbour → all survive.
-        assert_eq!(bbox5(&cluster_3x3(), BboxMethod::Erosion(1)), Some([16, 16, 48, 48]));
+        assert_eq!(
+            bbox5(&cluster_3x3(), BboxMethod::Erosion(1)),
+            Some([16, 16, 48, 48])
+        );
     }
 
     #[test]
     fn test_erosion_3x3_cluster_n4() {
         // Only the center block (2,2) has 4 active neighbours; all edge/corner
         // blocks of the 3×3 cluster have ≤ 3 active neighbours → only (2,2) survives.
-        assert_eq!(bbox5(&cluster_3x3(), BboxMethod::Erosion(4)), Some([32, 32, 16, 16]));
+        assert_eq!(
+            bbox5(&cluster_3x3(), BboxMethod::Erosion(4)),
+            Some([32, 32, 16, 16])
+        );
     }
 }
