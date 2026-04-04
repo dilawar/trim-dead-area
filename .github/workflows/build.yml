@@ -67,7 +67,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install FFmpeg
-        run: brew install ffmpeg pkg-config
+        run: |
+          brew install ffmpeg pkg-config
+          echo "FFMPEG_DIR=$(brew --prefix ffmpeg)" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix ffmpeg)/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -96,12 +99,12 @@ jobs:
 
       - name: Install FFmpeg (shared build from gyan.dev)
         run: |
-          $VCINSTALLDIR = $(& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath)
-          Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
+          Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=C:\Program Files\LLVM\bin`n"
           Invoke-WebRequest "${env:FFMPEG_DOWNLOAD_URL}" -OutFile ffmpeg-release-full-shared.7z
           7z x ffmpeg-release-full-shared.7z
           mkdir ffmpeg
-          mv ffmpeg-*/* ffmpeg/
+          $src = Get-ChildItem -Directory ffmpeg-* | Select-Object -First 1
+          Move-Item "$($src.FullName)\*" ffmpeg\
           Add-Content $env:GITHUB_ENV "FFMPEG_DIR=${pwd}\ffmpeg`n"
           Add-Content $env:GITHUB_PATH "${pwd}\ffmpeg\bin`n"
 
