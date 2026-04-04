@@ -282,6 +282,7 @@ fn run_analysis(path: &Path, skip: usize, threshold: f32) -> Option<[u32; 4]> {
             width: width as u32,
             height: height as u32,
             pts_secs,
+            duration_secs: None,
         });
     };
 

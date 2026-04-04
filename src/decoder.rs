@@ -10,6 +10,10 @@ pub struct VideoFrame {
     pub height: u32,
     /// Presentation timestamp in seconds.
     pub pts_secs: f64,
+    /// Total duration of the source video in seconds.
+    /// Only set on the **first** frame of each decode run; `None` on all others.
+    /// `None` also when the container does not report a reliable duration.
+    pub duration_secs: Option<f64>,
 }
 
 /// Decode every video frame from `path` and send them over `tx`.
@@ -90,6 +94,15 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
         Err(e) => bail!(format!("scaler error: {e}")),
     };
 
+    let container_duration = {
+        let d = ictx.duration();
+        if d > 0 {
+            Some(d as f64 / f64::from(ffmpeg::ffi::AV_TIME_BASE))
+        } else {
+            None
+        }
+    };
+
     let mut decoded = ffmpeg::util::frame::video::Video::empty();
     let mut rgba_frame = ffmpeg::util::frame::video::Video::empty();
     let mut frame_idx: u64 = 0;
@@ -116,6 +129,7 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
         }
 
         debug!(frame = *frame_idx, pts_secs, "decoded frame");
+        let duration_secs = if *frame_idx == 0 { container_duration } else { None };
         *frame_idx += 1;
 
         tx.send(Some(VideoFrame {
@@ -123,6 +137,7 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
             width: width as u32,
             height: height as u32,
             pts_secs,
+            duration_secs,
         }))
         .is_ok()
     };
@@ -258,6 +273,15 @@ pub fn decode_video_with_analysis(
             Err(e) => bail!(format!("scaler error: {e}")),
         };
 
+        let container_duration = {
+            let d = ictx.duration();
+            if d > 0 {
+                Some(d as f64 / f64::from(ffmpeg::ffi::AV_TIME_BASE))
+            } else {
+                None
+            }
+        };
+
         let mut analyzer = FullVideoAnalyzer::new();
         let mut decoded = ffmpeg::util::frame::video::Video::empty();
         let mut rgba_frame = ffmpeg::util::frame::video::Video::empty();
@@ -281,7 +305,8 @@ pub fn decode_video_with_analysis(
             y
         };
 
-        // Build a VideoFrame from an already-scaled RGBA frame (Full mode).
+        // Build a VideoFrame from an already-scaled RGBA frame.
+        // Sets duration_secs on the first frame only.
         let make_frame = |dec: &ffmpeg::util::frame::video::Video,
                           rgba: &ffmpeg::util::frame::video::Video,
                           frame_idx: &mut u64,
@@ -301,12 +326,14 @@ pub fn decode_video_with_analysis(
                 rgba_buf.extend_from_slice(&raw[start..start + width * 4]);
             }
             debug!(frame = *frame_idx, pts_secs, "decoded frame");
+            let duration_secs = if *frame_idx == 0 { container_duration } else { None };
             *frame_idx += 1;
             VideoFrame {
                 rgba: rgba_buf,
                 width: width as u32,
                 height: height as u32,
                 pts_secs,
+                duration_secs,
             }
         };
 

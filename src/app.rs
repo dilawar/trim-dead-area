@@ -72,6 +72,8 @@ pub struct App {
 
     /// Single-frame preview decoded when a file is first loaded.
     preview_rx: Option<Receiver<Option<VideoFrame>>>,
+    /// Total duration of the current video in seconds; used for the progress bar.
+    video_duration: Option<f64>,
 
     /// Threshold value that was used to start the current analysis run.
     last_threshold: f32,
@@ -110,6 +112,7 @@ impl App {
             crop_dialog: CropDialog::Hidden,
             export_rx: None,
             preview_rx: None,
+            video_duration: None,
             last_threshold: 5.0,
             analysis_fps,
             last_analysis_fps: analysis_fps,
@@ -194,6 +197,9 @@ impl App {
     fn poll_preview(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.preview_rx else { return };
         if let Ok(Some(frame)) = rx.try_recv() {
+            if let Some(d) = frame.duration_secs {
+                self.video_duration = Some(d);
+            }
             self.upload_frame(ctx, frame);
             // Drop the receiver — the decode thread will get a send error and exit.
             self.preview_rx = None;
@@ -242,6 +248,9 @@ impl App {
 
         if let Some(frame) = latest {
             self.current_pts = frame.pts_secs;
+            if let Some(d) = frame.duration_secs {
+                self.video_duration = Some(d);
+            }
             self.upload_frame(ctx, frame);
         }
 
@@ -535,8 +544,20 @@ impl eframe::App for App {
                 }
 
                 if matches!(self.state, AppState::Trimming | AppState::AnalysisPending) {
-                    ui.spinner();
-                    ui.weak("analysing…");
+                    match self.video_duration {
+                        Some(duration) if duration > 0.0 => {
+                            let progress = (self.current_pts / duration).clamp(0.0, 1.0) as f32;
+                            ui.add(
+                                egui::ProgressBar::new(progress)
+                                    .desired_width(180.0)
+                                    .text(format!("analysing… {:.0}%", progress * 100.0)),
+                            );
+                        }
+                        _ => {
+                            ui.spinner();
+                            ui.weak("analysing…");
+                        }
+                    }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
