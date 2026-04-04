@@ -3,7 +3,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 
 use tracing::{debug, error, info, warn};
 
-use crate::bbox::BboxMethod;
+use crate::bbox::{Bbox, BboxMethod};
 
 /// A single decoded video frame in packed RGBA format.
 pub struct VideoFrame {
@@ -210,7 +210,7 @@ pub fn decode_video_with_analysis(
     analysis_fps: f32,
     mode: AnalysisMode,
     method: BboxMethod,
-) -> Receiver<Option<[u32; 4]>> {
+) -> Receiver<Option<Bbox>> {
     use crate::analysis::FullVideoAnalyzer;
 
     let (result_tx, result_rx) = mpsc::channel();

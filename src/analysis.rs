@@ -3,7 +3,7 @@ use std::sync::mpsc::{self, Receiver};
 
 use tracing::{debug, error, info, trace};
 
-use crate::bbox::{compute_bbox, BboxMethod};
+use crate::bbox::{compute_bbox, Bbox, BboxMethod};
 use crate::decoder::VideoFrame;
 use crate::BLOCK;
 
@@ -36,7 +36,7 @@ impl MotionAnalyzer {
         frame: &VideoFrame,
         threshold: f32,
         method: BboxMethod,
-    ) -> Option<[u32; 4]> {
+    ) -> Option<Bbox> {
         let w = frame.width as usize;
         let h = frame.height as usize;
         let cols = w.div_ceil(BLOCK);
@@ -154,7 +154,7 @@ impl FullVideoAnalyzer {
         self.frames += 1;
     }
 
-    pub fn active_bbox(&self, threshold: f32, method: BboxMethod) -> Option<[u32; 4]> {
+    pub fn active_bbox(&self, threshold: f32, method: BboxMethod) -> Option<Bbox> {
         if self.frames == 0 {
             return None;
         }
@@ -188,7 +188,7 @@ pub fn analyze_file_async(
     skip: usize,
     threshold: f32,
     method: BboxMethod,
-) -> Receiver<Option<[u32; 4]>> {
+) -> Receiver<Option<Bbox>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = run_analysis(&path, skip, threshold, method);
@@ -198,7 +198,7 @@ pub fn analyze_file_async(
 }
 
 #[tracing::instrument(skip_all, fields(path = %path.display(), skip, threshold))]
-fn run_analysis(path: &Path, skip: usize, threshold: f32, method: BboxMethod) -> Option<[u32; 4]> {
+fn run_analysis(path: &Path, skip: usize, threshold: f32, method: BboxMethod) -> Option<Bbox> {
     use ffmpeg::format::Pixel;
     use ffmpeg::media::Type;
     use ffmpeg::software::scaling::{context::Context as ScaleCtx, flag::Flags};

@@ -3,6 +3,7 @@ use std::sync::mpsc::{self, Receiver};
 
 use anyhow::{bail, Context as _, Result};
 use ffmpeg::format::Pixel;
+use crate::bbox::Bbox;
 use ffmpeg::media::Type;
 use ffmpeg::software::scaling::{context::Context as ScaleCtx, flag::Flags};
 use ffmpeg::util::frame::video::Video as FfFrame;
@@ -18,7 +19,7 @@ use tracing::{error, info, instrument, warn};
 pub fn crop_video_async(
     input: PathBuf,
     output: PathBuf,
-    region: [u32; 4],
+    region: Bbox,
 ) -> Receiver<Result<(), String>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -28,7 +29,7 @@ pub fn crop_video_async(
     rx
 }
 
-fn crop_video(input: &Path, output: &Path, region: [u32; 4]) -> Result<()> {
+fn crop_video(input: &Path, output: &Path, region: Bbox) -> Result<()> {
     if ffmpeg_cli_available() {
         info!("ffmpeg binary found — using CLI");
         crop_via_cli(input, output, region)
@@ -55,8 +56,8 @@ fn ffmpeg_cli_available() -> bool {
     output = %output.display(),
     region = ?region,
 ))]
-fn crop_via_cli(input: &Path, output: &Path, region: [u32; 4]) -> Result<()> {
-    let [x, y, w, h] = region;
+fn crop_via_cli(input: &Path, output: &Path, region: Bbox) -> Result<()> {
+    let Bbox { x, y, w, h } = region;
     let input_str = input.to_str().context("input path is not valid UTF-8")?;
     let output_str = output.to_str().context("output path is not valid UTF-8")?;
     let filter = format!("crop={w}:{h}:{x}:{y}");
@@ -87,8 +88,8 @@ fn crop_via_cli(input: &Path, output: &Path, region: [u32; 4]) -> Result<()> {
     output = %output.display(),
     region = ?region,
 ))]
-fn crop_via_crate(input: &Path, output: &Path, region: [u32; 4]) -> Result<()> {
-    let [cx, cy, cw, ch] = region;
+fn crop_via_crate(input: &Path, output: &Path, region: Bbox) -> Result<()> {
+    let Bbox { x: cx, y: cy, w: cw, h: ch } = region;
 
     ffmpeg::init().context("ffmpeg init")?;
 

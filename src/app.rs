@@ -6,7 +6,7 @@ use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use tracing::{debug, info, warn};
 
 use crate::analysis::MotionAnalyzer;
-use crate::bbox::BboxMethod;
+use crate::bbox::{Bbox, BboxMethod};
 use crate::decoder::{decode_video, decode_video_with_analysis, AnalysisMode, VideoFrame};
 use crate::writer::crop_video_async;
 
@@ -36,11 +36,11 @@ enum CropDialog {
     NoRegion,
     Confirm {
         #[allow(dead_code)]
-        region: [u32; 4],
+        region: Bbox,
     },
     /// ffmpeg is running.
     Exporting {
-        region: [u32; 4],
+        region: Bbox,
         output: PathBuf,
     },
     Done {
@@ -68,11 +68,11 @@ pub struct App {
     // Real-time motion analysis (during playback).
     motion_analyzer: MotionAnalyzer,
     pub variance_threshold: f32,
-    active_region: Option<[u32; 4]>,
+    active_region: Option<Bbox>,
 
     // Full-video analysis result channel (fed by the decode thread itself).
-    analysis_rx: Option<Receiver<Option<[u32; 4]>>>,
-    final_region: Option<[u32; 4]>,
+    analysis_rx: Option<Receiver<Option<Bbox>>>,
+    final_region: Option<Bbox>,
     crop_dialog: CropDialog,
     export_rx: Option<Receiver<Result<(), String>>>,
 
@@ -431,7 +431,7 @@ impl App {
                     }
                 }
                 CropDialog::Exporting { region, .. } => {
-                    let [_, _, w, h] = *region;
+                    let Bbox { w, h, .. } = *region;
                     ui.label(format!("Writing {w}×{h} crop with ffmpeg…"));
                 }
                 CropDialog::Done { output } => {
@@ -659,7 +659,7 @@ impl eframe::App for App {
                         .suffix(" MAD"),
                 );
                 ui.weak("(raise to ignore camera shake or compression noise)");
-                if let Some([x, y, w, h]) = self.active_region {
+                if let Some(Bbox { x, y, w, h }) = self.active_region {
                     ui.separator();
                     ui.weak(format!("live {w}×{h} @ ({x},{y})"));
                 }
@@ -843,7 +843,7 @@ impl eframe::App for App {
             let avail = ui.available_rect_before_wrap();
             let painter = ui.painter();
 
-            if let Some([cx, cy, cw, ch]) = self.final_region {
+            if let Some(Bbox { x: cx, y: cy, w: cw, h: ch }) = self.final_region {
                 // ── Side-by-side ────────────────────────────────────────────
                 let gap = 6.0;
                 let half_w = (avail.width() - gap) / 2.0;
@@ -918,7 +918,7 @@ impl eframe::App for App {
                 );
 
                 // Yellow live region on left panel (during trimming)
-                if let Some([rx, ry, rw, rh]) = self.active_region {
+                if let Some(Bbox { x: rx, y: ry, w: rw, h: rh }) = self.active_region {
                     let r = egui::Rect::from_min_size(
                         left_disp.min + egui::vec2(rx as f32 * sx, ry as f32 * sy),
                         egui::vec2(rw as f32 * sx, rh as f32 * sy),
@@ -945,7 +945,7 @@ impl eframe::App for App {
                         egui::vec2(rw as f32 * sx, rh as f32 * sy),
                     )
                 };
-                if let Some([rx, ry, rw, rh]) = self.active_region {
+                if let Some(Bbox { x: rx, y: ry, w: rw, h: rh }) = self.active_region {
                     painter.rect_stroke(
                         overlay(rx, ry, rw, rh),
                         0.0,
@@ -953,7 +953,7 @@ impl eframe::App for App {
                         egui::StrokeKind::Outside,
                     );
                 }
-                if let Some([rx, ry, rw, rh]) = self.final_region {
+                if let Some(Bbox { x: rx, y: ry, w: rw, h: rh }) = self.final_region {
                     painter.rect_stroke(
                         overlay(rx, ry, rw, rh),
                         0.0,

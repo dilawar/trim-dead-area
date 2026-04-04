@@ -17,6 +17,25 @@ use crate::BLOCK;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+/// An axis-aligned bounding box in pixel coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bbox {
+    /// Left edge in pixels.
+    pub x: u32,
+    /// Top edge in pixels.
+    pub y: u32,
+    /// Width in pixels.
+    pub w: u32,
+    /// Height in pixels.
+    pub h: u32,
+}
+
+impl Bbox {
+    pub fn new(x: u32, y: u32, w: u32, h: u32) -> Self {
+        Self { x, y, w, h }
+    }
+}
+
 /// Strategy used when computing the active-region bounding box.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub enum BboxMethod {
@@ -61,7 +80,7 @@ pub fn compute_bbox(
     fh: u32,
     threshold: f32,
     method: BboxMethod,
-) -> Option<[u32; 4]> {
+) -> Option<Bbox> {
     let (min_col, min_row, max_col, max_row) = match method {
         BboxMethod::Union => bbox_union(map, cols, rows, threshold)?,
         BboxMethod::Percentile(p) => bbox_percentile(map, cols, rows, threshold, p)?,
@@ -81,14 +100,14 @@ fn blocks_to_pixels(
     max_row: usize,
     fw: u32,
     fh: u32,
-) -> [u32; 4] {
+) -> Bbox {
     let w = fw as usize;
     let h = fh as usize;
-    let px = (min_col * BLOCK) as u32;
-    let py = (min_row * BLOCK) as u32;
-    let pw = ((max_col + 1) * BLOCK).min(w) as u32 - px;
-    let ph = ((max_row + 1) * BLOCK).min(h) as u32 - py;
-    [px, py, pw, ph]
+    let x = (min_col * BLOCK) as u32;
+    let y = (min_row * BLOCK) as u32;
+    let bw = ((max_col + 1) * BLOCK).min(w) as u32 - x;
+    let bh = ((max_row + 1) * BLOCK).min(h) as u32 - y;
+    Bbox::new(x, y, bw, bh)
 }
 
 /// Tight min/max envelope — includes every active block.
@@ -262,9 +281,13 @@ mod tests {
     }
 
     // Helper: run compute_bbox on a 4×4 grid (64×64 px frame).
-    fn bbox4(active: &[(usize, usize)], method: BboxMethod) -> Option<[u32; 4]> {
+    fn bbox4(active: &[(usize, usize)], method: BboxMethod) -> Option<Bbox> {
         let map = make_map(4, 4, active);
         compute_bbox(&map, 4, 4, 64, 64, THRESH, method)
+    }
+
+    fn b(x: u32, y: u32, w: u32, h: u32) -> Option<Bbox> {
+        Some(Bbox::new(x, y, w, h))
     }
 
     // ── All-zero maps ────────────────────────────────────────────────────────
@@ -291,36 +314,27 @@ mod tests {
 
     // ── Single active block ──────────────────────────────────────────────────
 
-    // Block (1,2) in a 4×4/64×64 grid → pixel rect [16, 32, 16, 16].
+    // Block (1,2) in a 4×4/64×64 grid → pixel rect Bbox{x:16, y:32, w:16, h:16}.
     #[test]
     fn test_single_block_union() {
-        assert_eq!(bbox4(&[(1, 2)], BboxMethod::Union), Some([16, 32, 16, 16]));
+        assert_eq!(bbox4(&[(1, 2)], BboxMethod::Union), b(16, 32, 16, 16));
     }
 
     #[test]
     fn test_single_block_percentile_zero() {
-        assert_eq!(
-            bbox4(&[(1, 2)], BboxMethod::Percentile(0.0)),
-            Some([16, 32, 16, 16])
-        );
+        assert_eq!(bbox4(&[(1, 2)], BboxMethod::Percentile(0.0)), b(16, 32, 16, 16));
     }
 
     /// With only 1 active block the trim is clamped to 0 — result unchanged.
     #[test]
     fn test_single_block_percentile_fifty() {
-        assert_eq!(
-            bbox4(&[(1, 2)], BboxMethod::Percentile(50.0)),
-            Some([16, 32, 16, 16])
-        );
+        assert_eq!(bbox4(&[(1, 2)], BboxMethod::Percentile(50.0)), b(16, 32, 16, 16));
     }
 
     #[test]
     fn test_single_block_density_filter_1() {
         // Row 2 has 1 active block ≥ 1; col 1 has 1 active block ≥ 1 → survives.
-        assert_eq!(
-            bbox4(&[(1, 2)], BboxMethod::DensityFilter(1)),
-            Some([16, 32, 16, 16])
-        );
+        assert_eq!(bbox4(&[(1, 2)], BboxMethod::DensityFilter(1)), b(16, 32, 16, 16));
     }
 
     #[test]
@@ -338,10 +352,7 @@ mod tests {
     #[test]
     fn test_single_block_erosion_0() {
         // Requiring 0 neighbours: block survives regardless.
-        assert_eq!(
-            bbox4(&[(1, 2)], BboxMethod::Erosion(0)),
-            Some([16, 32, 16, 16])
-        );
+        assert_eq!(bbox4(&[(1, 2)], BboxMethod::Erosion(0)), b(16, 32, 16, 16));
     }
 
     // ── Outlier rejection ────────────────────────────────────────────────────
@@ -354,10 +365,7 @@ mod tests {
     #[test]
     fn test_outlier_union_includes_outlier() {
         // Union stretches to include (0,0).
-        assert_eq!(
-            bbox4(&outlier_active(), BboxMethod::Union),
-            Some([0, 0, 48, 48])
-        );
+        assert_eq!(bbox4(&outlier_active(), BboxMethod::Union), b(0, 0, 48, 48));
     }
 
     #[test]
@@ -366,7 +374,7 @@ mod tests {
         // min_col = sorted[1] = 1, max_col = sorted[3] = 2. Same for rows.
         assert_eq!(
             bbox4(&outlier_active(), BboxMethod::Percentile(25.0)),
-            Some([16, 16, 32, 32])
+            b(16, 16, 32, 32)
         );
     }
 
@@ -374,10 +382,7 @@ mod tests {
     fn test_outlier_erosion_excludes_outlier() {
         // (0,0) has 0 active neighbours → removed. Interior 2×2 blocks each
         // have 2 active neighbours ≥ 1 → survive.
-        assert_eq!(
-            bbox4(&outlier_active(), BboxMethod::Erosion(1)),
-            Some([16, 16, 32, 32])
-        );
+        assert_eq!(bbox4(&outlier_active(), BboxMethod::Erosion(1)), b(16, 16, 32, 32));
     }
 
     // ── Fully active map ─────────────────────────────────────────────────────
@@ -390,27 +395,18 @@ mod tests {
 
     #[test]
     fn test_fully_active_union() {
-        assert_eq!(
-            bbox4(&all_active_4x4(), BboxMethod::Union),
-            Some([0, 0, 64, 64])
-        );
+        assert_eq!(bbox4(&all_active_4x4(), BboxMethod::Union), b(0, 0, 64, 64));
     }
 
     #[test]
     fn test_fully_active_density_filter() {
-        assert_eq!(
-            bbox4(&all_active_4x4(), BboxMethod::DensityFilter(1)),
-            Some([0, 0, 64, 64])
-        );
+        assert_eq!(bbox4(&all_active_4x4(), BboxMethod::DensityFilter(1)), b(0, 0, 64, 64));
     }
 
     #[test]
     fn test_fully_active_erosion_1() {
         // Every block in a 4×4 grid has ≥ 2 active neighbours → all survive.
-        assert_eq!(
-            bbox4(&all_active_4x4(), BboxMethod::Erosion(1)),
-            Some([0, 0, 64, 64])
-        );
+        assert_eq!(bbox4(&all_active_4x4(), BboxMethod::Erosion(1)), b(0, 0, 64, 64));
     }
 
     // ── DensityFilter: top-row strip ─────────────────────────────────────────
@@ -421,7 +417,7 @@ mod tests {
         // DensityFilter(1): row 0 qualifies; cols 0,1,2 qualify.
         assert_eq!(
             bbox4(&[(0, 0), (1, 0), (2, 0)], BboxMethod::DensityFilter(1)),
-            Some([0, 0, 48, 16])
+            b(0, 0, 48, 16)
         );
     }
 
@@ -437,7 +433,7 @@ mod tests {
 
     // ── Erosion: 3×3 cluster in 5×5 grid ────────────────────────────────────
 
-    fn bbox5(active: &[(usize, usize)], method: BboxMethod) -> Option<[u32; 4]> {
+    fn bbox5(active: &[(usize, usize)], method: BboxMethod) -> Option<Bbox> {
         let map = make_map(5, 5, active);
         compute_bbox(&map, 5, 5, 80, 80, THRESH, method)
     }
@@ -451,20 +447,14 @@ mod tests {
     #[test]
     fn test_erosion_3x3_cluster_n1() {
         // All 9 blocks have ≥ 1 active neighbour → all survive.
-        assert_eq!(
-            bbox5(&cluster_3x3(), BboxMethod::Erosion(1)),
-            Some([16, 16, 48, 48])
-        );
+        assert_eq!(bbox5(&cluster_3x3(), BboxMethod::Erosion(1)), b(16, 16, 48, 48));
     }
 
     #[test]
     fn test_erosion_3x3_cluster_n4() {
         // Only the center block (2,2) has 4 active neighbours; all edge/corner
         // blocks of the 3×3 cluster have ≤ 3 active neighbours → only (2,2) survives.
-        assert_eq!(
-            bbox5(&cluster_3x3(), BboxMethod::Erosion(4)),
-            Some([32, 32, 16, 16])
-        );
+        assert_eq!(bbox5(&cluster_3x3(), BboxMethod::Erosion(4)), b(32, 32, 16, 16));
     }
 
     // ── Default ──────────────────────────────────────────────────────────────
@@ -480,11 +470,11 @@ mod tests {
     fn test_partial_frame_clamping() {
         // fw=20, fh=20 → 2×2 block grid. Block (1,1) overhangs the frame
         // boundary: pixel extent would be [16, 48) × [16, 48) but the frame
-        // is only 20 px wide/tall, so pw and ph are clamped to 4.
+        // is only 20 px wide/tall, so w and h are clamped to 4.
         let map = make_map(2, 2, &[(1, 1)]);
         assert_eq!(
             compute_bbox(&map, 2, 2, 20, 20, THRESH, BboxMethod::Union),
-            Some([16, 16, 4, 4])
+            b(16, 16, 4, 4)
         );
     }
 
@@ -497,7 +487,7 @@ mod tests {
         // Rows 1–2 and cols 1–2 each have 2 blocks ≥ 2 → include only the cluster.
         assert_eq!(
             bbox4(&outlier_active(), BboxMethod::DensityFilter(2)),
-            Some([16, 16, 32, 32])
+            b(16, 16, 32, 32)
         );
     }
 
@@ -506,10 +496,7 @@ mod tests {
         // min_n=0: every row and column qualifies (count >= 0 is always true),
         // so the result spans the entire grid regardless of where the active
         // blocks actually are.
-        assert_eq!(
-            bbox4(&[(1, 2)], BboxMethod::DensityFilter(0)),
-            Some([0, 0, 64, 64])
-        );
+        assert_eq!(bbox4(&[(1, 2)], BboxMethod::DensityFilter(0)), b(0, 0, 64, 64));
     }
 
     // ── Percentile extras ────────────────────────────────────────────────────
@@ -527,10 +514,7 @@ mod tests {
     fn test_percentile_two_active_blocks_clamped() {
         // xs=[0,3], ys=[0,3], n=2.  Even at p=49 the trim is
         // floor(0.49 × 2)=0 — the clamp ensures at least both blocks remain.
-        assert_eq!(
-            bbox4(&[(0, 0), (3, 3)], BboxMethod::Percentile(49.0)),
-            Some([0, 0, 64, 64])
-        );
+        assert_eq!(bbox4(&[(0, 0), (3, 3)], BboxMethod::Percentile(49.0)), b(0, 0, 64, 64));
     }
 
     #[test]
@@ -541,7 +525,7 @@ mod tests {
         // min/max after trim: xs[1]=1, xs[1]=1 → only block (1,1) remains.
         assert_eq!(
             bbox4(&[(0, 0), (1, 1), (2, 2)], BboxMethod::Percentile(34.0)),
-            Some([16, 16, 16, 16])
+            b(16, 16, 16, 16)
         );
     }
 
@@ -556,7 +540,7 @@ mod tests {
                 &[(0, 1), (2, 1), (3, 1), (2, 2), (3, 2)],
                 BboxMethod::Percentile(20.0)
             ),
-            Some([32, 16, 32, 32])
+            b(32, 16, 32, 32)
         );
     }
 
@@ -566,13 +550,10 @@ mod tests {
     fn test_erosion_horizontal_line_n1() {
         // Full row 2: (0,2),(1,2),(2,2),(3,2).
         // Every block has ≥ 1 active neighbour (end blocks have 1; inner have 2).
-        // All 4 survive → row 2, cols 0–3 → [0, 32, 64, 16].
+        // All 4 survive → row 2, cols 0–3.
         assert_eq!(
-            bbox4(
-                &[(0, 2), (1, 2), (2, 2), (3, 2)],
-                BboxMethod::Erosion(1)
-            ),
-            Some([0, 32, 64, 16])
+            bbox4(&[(0, 2), (1, 2), (2, 2), (3, 2)], BboxMethod::Erosion(1)),
+            b(0, 32, 64, 16)
         );
     }
 
@@ -581,11 +562,8 @@ mod tests {
         // Same row. End blocks (0,2) and (3,2) have only 1 neighbour < 2 →
         // removed.  Inner blocks (1,2) and (2,2) each have 2 neighbours → survive.
         assert_eq!(
-            bbox4(
-                &[(0, 2), (1, 2), (2, 2), (3, 2)],
-                BboxMethod::Erosion(2)
-            ),
-            Some([16, 32, 32, 16])
+            bbox4(&[(0, 2), (1, 2), (2, 2), (3, 2)], BboxMethod::Erosion(2)),
+            b(16, 32, 32, 16)
         );
     }
 
@@ -597,7 +575,7 @@ mod tests {
         // n=2: all survive.
         assert_eq!(
             bbox4(&[(1, 1), (1, 2), (2, 1), (2, 2)], BboxMethod::Erosion(2)),
-            Some([16, 16, 32, 32])
+            b(16, 16, 32, 32)
         );
     }
 
