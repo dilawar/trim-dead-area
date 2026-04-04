@@ -580,20 +580,16 @@ impl eframe::App for App {
                 }
 
                 if matches!(self.state, AppState::Trimming | AppState::AnalysisPending) {
-                    match self.video_duration {
-                        Some(duration) if duration > 0.0 => {
-                            let progress = (self.current_pts / duration).clamp(0.0, 1.0) as f32;
-                            ui.add(
-                                egui::ProgressBar::new(progress)
-                                    .desired_width(180.0)
-                                    .text(format!("analysing… {:.0}%", progress * 100.0)),
-                            );
-                        }
-                        _ => {
-                            ui.spinner();
-                            ui.weak("analysing…");
-                        }
-                    }
+                    let progress = self.video_duration
+                        .filter(|&d| d > 0.0)
+                        .map(|d| (self.current_pts / d).clamp(0.0, 1.0) as f32)
+                        .unwrap_or(0.0);
+                    ui.add(
+                        egui::ProgressBar::new(progress)
+                            .desired_width(180.0)
+                            .text(format!("analysing… {:.0}%", progress * 100.0))
+                            .animate(true),
+                    );
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
