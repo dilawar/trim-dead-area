@@ -92,7 +92,9 @@ impl App {
         _cc: &eframe::CreationContext,
         initial_file: Option<PathBuf>,
         analysis_fps: f32,
+        fast: bool,
     ) -> Self {
+        let analysis_mode = if fast { AnalysisMode::Fast } else { AnalysisMode::Full };
         let mut app = Self {
             state: AppState::Idle,
             file_path: None,
@@ -111,8 +113,8 @@ impl App {
             last_threshold: 5.0,
             analysis_fps,
             last_analysis_fps: analysis_fps,
-            analysis_mode: AnalysisMode::Full,
-            last_analysis_mode: AnalysisMode::Full,
+            analysis_mode,
+            last_analysis_mode: analysis_mode,
             restart_prompt: false,
         };
         if let Some(path) = initial_file {
