@@ -128,10 +128,34 @@ impl App {
         app
     }
 
+    /// Reset every piece of transient per-run state. Called by both
+    /// `open_file` and `start_trim` so neither can accidentally leave
+    /// stale data from a previous run.
+    fn reset_run_state(&mut self) {
+        // Drop any live channels — the background threads will notice the
+        // receiver is gone and exit cleanly.
+        self.frame_rx = None;
+        self.analysis_rx = None;
+        self.export_rx = None;
+        self.preview_rx = None;
+
+        self.current_pts = 0.0;
+        self.video_duration = None;
+        self.texture = None;
+        self.error = None;
+        self.motion_analyzer.reset();
+        self.active_region = None;
+        self.final_region = None;
+        self.crop_dialog = CropDialog::Hidden;
+        self.restart_prompt = false;
+    }
+
     /// Load a file without starting analysis. Resets all transient state and
     /// kicks off a background decode of the first frame for preview.
     pub fn open_file(&mut self, path: PathBuf) {
         info!(path = %path.display(), "file loaded");
+
+        self.reset_run_state();
 
         let (tx, rx) = mpsc::sync_channel(1);
         thread::spawn({
@@ -141,18 +165,7 @@ impl App {
 
         self.state = AppState::LoadingPreview;
         self.file_path = Some(path);
-        self.frame_rx = None;
-        self.current_pts = 0.0;
-        self.texture = None;
-        self.error = None;
-        self.motion_analyzer.reset();
-        self.active_region = None;
-        self.analysis_rx = None;
-        self.final_region = None;
-        self.crop_dialog = CropDialog::Hidden;
-        self.export_rx = None;
         self.preview_rx = Some(rx);
-        self.restart_prompt = false;
     }
 
     /// (Re-)start decoding + background analysis from the beginning.
@@ -161,7 +174,15 @@ impl App {
             Some(p) => p.clone(),
             None => return,
         };
-        info!(path = %path.display(), threshold = self.variance_threshold, "starting trim");
+        info!(
+            path = %path.display(),
+            threshold = self.variance_threshold,
+            analysis_fps = self.analysis_fps,
+            mode = ?self.analysis_mode,
+            "starting trim"
+        );
+
+        self.reset_run_state();
 
         let (tx, rx) = mpsc::sync_channel(30);
         let analysis_rx = decode_video_with_analysis(
@@ -174,20 +195,10 @@ impl App {
 
         self.state = AppState::Trimming;
         self.frame_rx = Some(rx);
-        self.current_pts = 0.0;
-        self.texture = None;
-        self.error = None;
-        self.motion_analyzer.reset();
-        self.active_region = None;
         self.analysis_rx = Some(analysis_rx);
-        self.final_region = None;
-        self.crop_dialog = CropDialog::Hidden;
-        self.export_rx = None;
-        self.preview_rx = None;
         self.last_threshold = self.variance_threshold;
         self.last_analysis_fps = self.analysis_fps;
         self.last_analysis_mode = self.analysis_mode;
-        self.restart_prompt = false;
     }
 
     fn is_trimming(&self) -> bool {
@@ -257,7 +268,7 @@ impl App {
         }
 
         if ended {
-            self.on_playback_ended();
+            self.on_playback_ended(ctx);
         } else {
             // Throttle display to ~8 fps. The decode thread runs freely between
             // repaints, filling the channel buffer; all frames are decoded and
@@ -266,19 +277,25 @@ impl App {
         }
     }
 
-    fn on_playback_ended(&mut self) {
-        info!(final_pts = self.current_pts, "playback ended");
+    fn on_playback_ended(&mut self, ctx: &egui::Context) {
+        info!(
+            final_pts = self.current_pts,
+            final_region = ?self.final_region,
+            analysis_pending = self.analysis_rx.is_some(),
+            "playback ended"
+        );
         self.state = AppState::Ready;
         self.crop_dialog = match (self.final_region, self.analysis_rx.is_some()) {
             (Some(region), _) => CropDialog::Confirm { region },
             (None, true) => {
-                // Analysis result hasn't arrived yet — wait for it.
+                // Analysis result hasn't arrived yet; stay alive until it does.
                 self.state = AppState::AnalysisPending;
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
                 return;
             }
             (None, false) => {
-                // Analysis already finished with no result (poll_analysis cleared
-                // analysis_rx before playback ended).
+                // poll_analysis already received the result (None) before the
+                // display sentinel arrived — no active region was found.
                 CropDialog::NoRegion
             }
         };
