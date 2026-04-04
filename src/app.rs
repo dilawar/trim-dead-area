@@ -569,13 +569,17 @@ impl eframe::App for App {
                 {
                     match self.state {
                         AppState::Previewing => {
-                            if ui.button("⏹ Stop").clicked() {
+                            let stop_btn = egui::Button::new("⏹ Stop")
+                                .fill(egui::Color32::from_rgb(180, 60, 60));
+                            if ui.add(stop_btn).clicked() {
                                 self.frame_rx = None;
                                 self.state = AppState::Ready;
                             }
                         }
                         _ => {
-                            if ui.button("▶ Play Cropped").clicked() {
+                            let play_btn = egui::Button::new("▶ Play Cropped")
+                                .fill(egui::Color32::from_rgb(30, 120, 100));
+                            if ui.add(play_btn).clicked() {
                                 self.start_preview();
                             }
                         }
@@ -587,7 +591,9 @@ impl eframe::App for App {
                     if !matches!(self.state, AppState::Trimming | AppState::AnalysisPending)
                         && !matches!(self.crop_dialog, CropDialog::Exporting { .. })
                     {
-                        if ui.button("💾 Save Cropped…").clicked() {
+                        let save_btn = egui::Button::new("💾 Save Cropped…")
+                            .fill(egui::Color32::from_rgb(30, 100, 160));
+                        if ui.add(save_btn).clicked() {
                             let default_name = self
                                 .file_path
                                 .as_deref()
