@@ -21,6 +21,8 @@ pub enum AppState {
     Ready,
     /// Decode + analysis running; video frames are being displayed.
     Trimming,
+    /// Replaying the video for preview (no analysis); both panels update.
+    Previewing,
     /// Playback finished; waiting for the analysis result before showing the dialog.
     AnalysisPending,
 }
@@ -32,6 +34,7 @@ enum CropDialog {
     /// Analysis finished but no block exceeded the MAD threshold.
     NoRegion,
     Confirm {
+        #[allow(dead_code)]
         region: [u32; 4],
     },
     /// ffmpeg is running.
@@ -201,6 +204,28 @@ impl App {
         self.last_analysis_mode = self.analysis_mode;
     }
 
+    /// Replay the video for preview without running analysis.
+    /// Does NOT call `reset_run_state` — `final_region`, `texture`, and
+    /// `video_duration` are preserved.
+    fn start_preview(&mut self) {
+        let path = match &self.file_path {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        // Drop previous decode receiver; analysis state is preserved.
+        self.frame_rx = None;
+        self.preview_rx = None;
+        self.current_pts = 0.0;
+        self.error = None;
+        let (tx, rx) = mpsc::sync_channel(30);
+        thread::spawn({
+            let path = path.clone();
+            move || decode_video(path, tx)
+        });
+        self.frame_rx = Some(rx);
+        self.state = AppState::Previewing;
+    }
+
     fn is_trimming(&self) -> bool {
         matches!(self.state, AppState::Trimming | AppState::AnalysisPending) || self.restart_prompt
     }
@@ -229,7 +254,7 @@ impl App {
     /// video plays as fast as the decoder and screen refresh allow, skipping
     /// intermediate frames freely.
     fn poll_frames(&mut self, ctx: &egui::Context) {
-        if !matches!(self.state, AppState::Trimming) {
+        if !matches!(self.state, AppState::Trimming | AppState::Previewing) {
             return;
         }
 
@@ -270,7 +295,11 @@ impl App {
         }
 
         if ended {
-            self.on_playback_ended(ctx);
+            if matches!(self.state, AppState::Previewing) {
+                self.state = AppState::Ready;
+            } else {
+                self.on_playback_ended(ctx);
+            }
         } else {
             // Throttle display to ~8 fps. The decode thread runs freely between
             // repaints, filling the channel buffer; all frames are decoded and
@@ -370,7 +399,6 @@ impl App {
         }
 
         enum Action {
-            StartExport { region: [u32; 4], output: PathBuf },
             Dismiss,
         }
         let mut action: Option<Action> = None;
@@ -390,46 +418,8 @@ impl App {
                     }
                 }
 
-                CropDialog::Confirm { region } => {
-                    let [x, y, w, h] = *region;
-                    ui.label("The most active region across the full video:");
-                    ui.monospace(format!("  {w} × {h}  at  ({x}, {y})"));
-                    ui.add_space(6.0);
-                    ui.label("Crop the video to this rectangle?");
-                    ui.small("All frames are written to the output — none are skipped.");
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Save Cropped Video…").clicked() {
-                            let default_name = self
-                                .file_path
-                                .as_deref()
-                                .and_then(|p| {
-                                    let stem = p.file_stem()?.to_string_lossy();
-                                    let ext = p
-                                        .extension()
-                                        .map(|e| e.to_string_lossy())
-                                        .unwrap_or("mp4".into());
-                                    Some(format!("{stem}_cropped.{ext}"))
-                                })
-                                .unwrap_or_else(|| "cropped.mp4".into());
-                            let mut dialog = rfd::FileDialog::new()
-                                .add_filter("MP4 video", &["mp4"])
-                                .set_file_name(&default_name);
-                            if let Some(dir) = self.file_path.as_deref().and_then(|p| p.parent()) {
-                                dialog = dialog.set_directory(dir);
-                            }
-                            if let Some(output) = dialog.save_file()
-                            {
-                                action = Some(Action::StartExport {
-                                    region: [x, y, w, h],
-                                    output,
-                                });
-                            }
-                        }
-                        if ui.button("Dismiss").clicked() {
-                            action = Some(Action::Dismiss);
-                        }
-                    });
+                CropDialog::Confirm { .. } => {
+                    // Save button is now in the bottom bar; nothing to show here.
                 }
 
                 CropDialog::Exporting { region, .. } => {
@@ -460,20 +450,13 @@ impl App {
             });
 
         match action {
-            Some(Action::StartExport { region, output }) => {
-                info!(output = %output.display(), region = ?region, "starting export");
-                if let Some(input) = &self.file_path {
-                    let rx = crop_video_async(input.clone(), output.clone(), region);
-                    self.export_rx = Some(rx);
-                    self.crop_dialog = CropDialog::Exporting { region, output };
-                }
-            }
             Some(Action::Dismiss) => {
                 self.crop_dialog = CropDialog::Hidden;
             }
             None => {}
         }
     }
+
     fn show_restart_prompt(&mut self, ctx: &egui::Context) {
         if !self.restart_prompt {
             return;
@@ -581,7 +564,7 @@ impl eframe::App for App {
                     ui.label(format!("  {name}"));
                 }
 
-                if matches!(self.state, AppState::Trimming | AppState::AnalysisPending) {
+                if matches!(self.state, AppState::Trimming | AppState::AnalysisPending | AppState::Previewing) {
                     let progress = self.video_duration
                         .filter(|&d| d > 0.0)
                         .map(|d| (self.current_pts / d).clamp(0.0, 1.0) as f32)
@@ -591,6 +574,60 @@ impl eframe::App for App {
                             .desired_width(180.0)
                             .text(format!("analysing… {:.0}%", progress * 100.0)),
                     );
+                }
+
+                // Play / Stop preview button (only when a region has been found)
+                if self.final_region.is_some()
+                    && !matches!(self.state, AppState::Trimming | AppState::AnalysisPending)
+                {
+                    match self.state {
+                        AppState::Previewing => {
+                            if ui.button("⏹ Stop").clicked() {
+                                self.frame_rx = None;
+                                self.state = AppState::Ready;
+                            }
+                        }
+                        _ => {
+                            if ui.button("▶ Play").clicked() {
+                                self.start_preview();
+                            }
+                        }
+                    }
+                }
+
+                // Save button — visible when region found and not currently exporting
+                if let Some(region) = self.final_region {
+                    if !matches!(self.state, AppState::Trimming | AppState::AnalysisPending)
+                        && !matches!(self.crop_dialog, CropDialog::Exporting { .. })
+                    {
+                        if ui.button("💾 Save Cropped…").clicked() {
+                            let default_name = self
+                                .file_path
+                                .as_deref()
+                                .and_then(|p| {
+                                    let stem = p.file_stem()?.to_string_lossy();
+                                    let ext = p
+                                        .extension()
+                                        .map(|e| e.to_string_lossy())
+                                        .unwrap_or("mp4".into());
+                                    Some(format!("{stem}_cropped.{ext}"))
+                                })
+                                .unwrap_or_else(|| "cropped.mp4".into());
+                            let mut dialog = rfd::FileDialog::new()
+                                .add_filter("MP4 video", &["mp4"])
+                                .set_file_name(&default_name);
+                            if let Some(dir) = self.file_path.as_deref().and_then(|p| p.parent()) {
+                                dialog = dialog.set_directory(dir);
+                            }
+                            if let Some(output) = dialog.save_file() {
+                                if let Some(input) = &self.file_path {
+                                    let rx = crop_video_async(input.clone(), output.clone(), region);
+                                    self.export_rx = Some(rx);
+                                    self.crop_dialog = CropDialog::Exporting { region, output };
+                                }
+                            }
+                        }
+                    }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -667,44 +704,111 @@ impl eframe::App for App {
 
             let full_size = texture.size_vec2();
             let avail = ui.available_rect_before_wrap();
-
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            let effective = full_size;
-
-            let scale = (avail.width() / effective.x).min(avail.height() / effective.y);
-            let disp_rect = egui::Rect::from_center_size(avail.center(), effective * scale);
-
             let painter = ui.painter();
-            painter.image(texture.id(), disp_rect, uv, egui::Color32::WHITE);
 
-            let sx = disp_rect.width() / full_size.x;
-            let sy = disp_rect.height() / full_size.y;
-
-            let overlay = |rx: u32, ry: u32, rw: u32, rh: u32| {
-                egui::Rect::from_min_size(
-                    disp_rect.min + egui::vec2(rx as f32 * sx, ry as f32 * sy),
-                    egui::vec2(rw as f32 * sx, rh as f32 * sy),
-                )
-            };
-
-            // Yellow: live EMA region (updates every displayed frame).
-            if let Some([rx, ry, rw, rh]) = self.active_region {
-                painter.rect_stroke(
-                    overlay(rx, ry, rw, rh),
-                    0.0,
-                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                    egui::StrokeKind::Outside,
+            if let Some([cx, cy, cw, ch]) = self.final_region {
+                // ── Side-by-side ────────────────────────────────────────────
+                let gap = 6.0;
+                let half_w = (avail.width() - gap) / 2.0;
+                let left_avail = egui::Rect::from_min_size(avail.min, egui::vec2(half_w, avail.height()));
+                let right_avail = egui::Rect::from_min_size(
+                    avail.min + egui::vec2(half_w + gap, 0.0),
+                    egui::vec2(half_w, avail.height()),
                 );
-            }
 
-            // Cyan: full-video result (stable once analysis finishes).
-            if let Some([rx, ry, rw, rh]) = self.final_region {
+                // Left — full frame
+                let left_scale = (left_avail.width() / full_size.x).min(left_avail.height() / full_size.y);
+                let left_disp = egui::Rect::from_center_size(left_avail.center(), full_size * left_scale);
+                let full_uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                painter.image(texture.id(), left_disp, full_uv, egui::Color32::WHITE);
+
+                // Crop rectangle on left panel
+                let sx = left_disp.width() / full_size.x;
+                let sy = left_disp.height() / full_size.y;
+                let crop_box = egui::Rect::from_min_size(
+                    left_disp.min + egui::vec2(cx as f32 * sx, cy as f32 * sy),
+                    egui::vec2(cw as f32 * sx, ch as f32 * sy),
+                );
                 painter.rect_stroke(
-                    overlay(rx, ry, rw, rh),
+                    crop_box,
                     0.0,
                     egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 220, 220)),
                     egui::StrokeKind::Outside,
                 );
+
+                // Right — cropped sub-rect via UV
+                let crop_uv = egui::Rect::from_min_max(
+                    egui::pos2(cx as f32 / full_size.x, cy as f32 / full_size.y),
+                    egui::pos2((cx + cw) as f32 / full_size.x, (cy + ch) as f32 / full_size.y),
+                );
+                let crop_natural = egui::vec2(cw as f32, ch as f32);
+                let right_scale =
+                    (right_avail.width() / crop_natural.x).min(right_avail.height() / crop_natural.y);
+                let right_disp =
+                    egui::Rect::from_center_size(right_avail.center(), crop_natural * right_scale);
+                painter.image(texture.id(), right_disp, crop_uv, egui::Color32::WHITE);
+
+                // Labels
+                let lc = egui::Color32::from_rgba_premultiplied(220, 220, 220, 200);
+                let font = egui::FontId::proportional(13.0);
+                painter.text(
+                    left_disp.min + egui::vec2(6.0, 4.0),
+                    egui::Align2::LEFT_TOP,
+                    "Original",
+                    font.clone(),
+                    lc,
+                );
+                painter.text(
+                    right_disp.min + egui::vec2(6.0, 4.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("Cropped  {cw}×{ch}"),
+                    font,
+                    lc,
+                );
+
+                // Vertical divider
+                let mid_x = avail.left() + half_w + gap / 2.0;
+                painter.vline(mid_x, avail.y_range(), egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
+
+                // Yellow live region on left panel (during trimming)
+                if let Some([rx, ry, rw, rh]) = self.active_region {
+                    let r = egui::Rect::from_min_size(
+                        left_disp.min + egui::vec2(rx as f32 * sx, ry as f32 * sy),
+                        egui::vec2(rw as f32 * sx, rh as f32 * sy),
+                    );
+                    painter.rect_stroke(r, 0.0, egui::Stroke::new(2.0, egui::Color32::YELLOW), egui::StrokeKind::Outside);
+                }
+            } else {
+                // ── Single panel ─────────────────────────────────────────────
+                let scale = (avail.width() / full_size.x).min(avail.height() / full_size.y);
+                let disp_rect = egui::Rect::from_center_size(avail.center(), full_size * scale);
+                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                painter.image(texture.id(), disp_rect, uv, egui::Color32::WHITE);
+
+                let sx = disp_rect.width() / full_size.x;
+                let sy = disp_rect.height() / full_size.y;
+                let overlay = |rx: u32, ry: u32, rw: u32, rh: u32| {
+                    egui::Rect::from_min_size(
+                        disp_rect.min + egui::vec2(rx as f32 * sx, ry as f32 * sy),
+                        egui::vec2(rw as f32 * sx, rh as f32 * sy),
+                    )
+                };
+                if let Some([rx, ry, rw, rh]) = self.active_region {
+                    painter.rect_stroke(
+                        overlay(rx, ry, rw, rh),
+                        0.0,
+                        egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+                if let Some([rx, ry, rw, rh]) = self.final_region {
+                    painter.rect_stroke(
+                        overlay(rx, ry, rw, rh),
+                        0.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 220, 220)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
             }
         });
     }
