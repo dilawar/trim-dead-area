@@ -429,10 +429,7 @@ impl App {
 
                 CropDialog::Exporting { region, .. } => {
                     let [_, _, w, h] = *region;
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(format!("Exporting {w}×{h} crop…"));
-                    });
+                    ui.label(format!("Exporting {w}×{h} crop…"));
                     ui.small("Running ffmpeg — every frame is written to the output.");
                 }
 
@@ -587,8 +584,7 @@ impl eframe::App for App {
                     ui.add(
                         egui::ProgressBar::new(progress)
                             .desired_width(180.0)
-                            .text(format!("analysing… {:.0}%", progress * 100.0))
-                            .animate(true),
+                            .text(format!("analysing… {:.0}%", progress * 100.0)),
                     );
                 }
 
