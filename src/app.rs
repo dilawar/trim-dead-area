@@ -84,7 +84,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(_cc: &eframe::CreationContext, initial_file: Option<PathBuf>, analysis_fps: f32) -> Self {
+    pub fn new(
+        _cc: &eframe::CreationContext,
+        initial_file: Option<PathBuf>,
+        analysis_fps: f32,
+    ) -> Self {
         let mut app = Self {
             state: AppState::Idle,
             file_path: None,
@@ -168,8 +172,7 @@ impl App {
     }
 
     fn is_trimming(&self) -> bool {
-        matches!(self.state, AppState::Trimming | AppState::AnalysisPending)
-            || self.restart_prompt
+        matches!(self.state, AppState::Trimming | AppState::AnalysisPending) || self.restart_prompt
     }
 
     // ── Preview (first-frame thumbnail on file load) ─────────────────────────
@@ -500,7 +503,9 @@ impl eframe::App for App {
 
                 ui.add_enabled_ui(self.file_path.is_some(), |ui| {
                     let go = egui::Button::new(
-                        egui::RichText::new("Go").color(egui::Color32::WHITE).strong(),
+                        egui::RichText::new("Go")
+                            .color(egui::Color32::WHITE)
+                            .strong(),
                     )
                     .fill(egui::Color32::from_rgb(34, 139, 34));
                     if ui.add(go).clicked() {

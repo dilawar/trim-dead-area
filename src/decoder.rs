@@ -263,7 +263,12 @@ pub fn decode_video_with_analysis(
             }
             debug!(frame = *frame_idx, pts_secs, "decoded frame");
             *frame_idx += 1;
-            VideoFrame { rgba, width: width as u32, height: height as u32, pts_secs }
+            VideoFrame {
+                rgba,
+                width: width as u32,
+                height: height as u32,
+                pts_secs,
+            }
         };
 
         for (stream, packet) in ictx.packets() {
