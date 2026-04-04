@@ -4,21 +4,11 @@ A video player that automatically detects and removes the static borders and
 letterboxing from a video — regions that never change — and crops the output
 file to the area that actually has content.
 
----
-
 ## Demo
 
-### Example 1
+https://youtu.be/
 
-**Input** — original YouTube Short with static black borders:
-
-[![Input video](https://img.youtube.com/vi/X9FQ7-t45hU/0.jpg)](https://youtube.com/shorts/X9FQ7-t45hU?si=BQCwINot3tXfxBkf)
-
-**Output** — cropped result produced by trim-dead-area:
-
-[![Output video](https://img.youtube.com/vi/5WyGapgk64A/0.jpg)](https://youtu.be/5WyGapgk64A)
-
-### Example 2
+[![Demo](https://img.youtube.com/vi/tFr4RkUZhgo/0.jpg)](https://www.youtube.com/watch?v=tFr4RkUZhgo)
 
 **Input:**
 
