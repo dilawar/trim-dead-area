@@ -9,6 +9,22 @@ use crate::analysis::MotionAnalyzer;
 use crate::decoder::{decode_video, decode_video_with_analysis, VideoFrame};
 use crate::writer::crop_video_async;
 
+// ── Application state ────────────────────────────────────────────────────────
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AppState {
+    /// No file is loaded.
+    Idle,
+    /// File opened; first-frame preview decode in flight.
+    LoadingPreview,
+    /// Preview frame shown; waiting for the user to click Go.
+    Ready,
+    /// Decode + analysis running; video frames are being displayed.
+    Trimming,
+    /// Playback finished; waiting for the analysis result before showing the dialog.
+    AnalysisPending,
+}
+
 // ── Crop dialog state machine ────────────────────────────────────────────────
 
 enum CropDialog {
@@ -32,10 +48,13 @@ enum CropDialog {
 // ── App ──────────────────────────────────────────────────────────────────────
 
 pub struct App {
+    /// High-level lifecycle state; replaces the old `playing` and
+    /// `waiting_to_show_dialog` booleans.
+    pub state: AppState,
+
     file_path: Option<PathBuf>,
     texture: Option<TextureHandle>,
     frame_rx: Option<Receiver<Option<VideoFrame>>>,
-    playing: bool,
     /// PTS of the last displayed frame (seconds); used only for the time readout.
     current_pts: f64,
     error: Option<String>,
@@ -48,8 +67,6 @@ pub struct App {
     // Full-video analysis result channel (fed by the decode thread itself).
     analysis_rx: Option<Receiver<Option<[u32; 4]>>>,
     final_region: Option<[u32; 4]>,
-    /// Set when playback finishes before the analysis result arrives.
-    waiting_to_show_dialog: bool,
     crop_dialog: CropDialog,
     export_rx: Option<Receiver<Result<(), String>>>,
 
@@ -65,10 +82,10 @@ pub struct App {
 impl App {
     pub fn new(_cc: &eframe::CreationContext, initial_file: Option<PathBuf>) -> Self {
         let mut app = Self {
+            state: AppState::Idle,
             file_path: None,
             texture: None,
             frame_rx: None,
-            playing: false,
             current_pts: 0.0,
             error: None,
             motion_analyzer: MotionAnalyzer::default(),
@@ -76,7 +93,6 @@ impl App {
             active_region: None,
             analysis_rx: None,
             final_region: None,
-            waiting_to_show_dialog: false,
             crop_dialog: CropDialog::Hidden,
             export_rx: None,
             preview_rx: None,
@@ -100,9 +116,9 @@ impl App {
             move || decode_video(path, tx)
         });
 
+        self.state = AppState::LoadingPreview;
         self.file_path = Some(path);
         self.frame_rx = None;
-        self.playing = false;
         self.current_pts = 0.0;
         self.texture = None;
         self.error = None;
@@ -110,7 +126,6 @@ impl App {
         self.active_region = None;
         self.analysis_rx = None;
         self.final_region = None;
-        self.waiting_to_show_dialog = false;
         self.crop_dialog = CropDialog::Hidden;
         self.export_rx = None;
         self.preview_rx = Some(rx);
@@ -128,8 +143,8 @@ impl App {
         let (tx, rx) = mpsc::sync_channel(30);
         let analysis_rx = decode_video_with_analysis(path, tx, self.variance_threshold);
 
+        self.state = AppState::Trimming;
         self.frame_rx = Some(rx);
-        self.playing = true;
         self.current_pts = 0.0;
         self.texture = None;
         self.error = None;
@@ -137,7 +152,6 @@ impl App {
         self.active_region = None;
         self.analysis_rx = Some(analysis_rx);
         self.final_region = None;
-        self.waiting_to_show_dialog = false;
         self.crop_dialog = CropDialog::Hidden;
         self.export_rx = None;
         self.preview_rx = None;
@@ -146,7 +160,8 @@ impl App {
     }
 
     fn is_trimming(&self) -> bool {
-        self.playing || self.analysis_rx.is_some()
+        matches!(self.state, AppState::Trimming | AppState::AnalysisPending)
+            || self.restart_prompt
     }
 
     // ── Preview (first-frame thumbnail on file load) ─────────────────────────
@@ -157,6 +172,7 @@ impl App {
             self.upload_frame(ctx, frame);
             // Drop the receiver — the decode thread will get a send error and exit.
             self.preview_rx = None;
+            self.state = AppState::Ready;
             ctx.request_repaint();
         }
     }
@@ -169,10 +185,7 @@ impl App {
     /// video plays as fast as the decoder and screen refresh allow, skipping
     /// intermediate frames freely.
     fn poll_frames(&mut self, ctx: &egui::Context) {
-        if !self.playing {
-            return;
-        }
-        if self.frame_rx.is_none() {
+        if !matches!(self.state, AppState::Trimming) {
             return;
         }
 
@@ -208,7 +221,6 @@ impl App {
         }
 
         if ended {
-            self.playing = false;
             self.on_playback_ended();
         } else {
             // Ask for another repaint immediately so we keep consuming frames
@@ -220,10 +232,12 @@ impl App {
     fn on_playback_ended(&mut self) {
         info!(final_pts = self.current_pts, "playback ended");
         if let Some(region) = self.final_region {
+            self.state = AppState::Ready;
             self.crop_dialog = CropDialog::Confirm { region };
         } else {
-            // Analysis result hasn't arrived yet; show dialog as soon as it does.
-            self.waiting_to_show_dialog = true;
+            // Analysis result hasn't arrived yet; transition to AnalysisPending
+            // so poll_analysis knows to show the dialog when the result arrives.
+            self.state = AppState::AnalysisPending;
         }
     }
 
@@ -235,8 +249,8 @@ impl App {
             info!(region = ?result, "analysis result received");
             self.final_region = result;
             self.analysis_rx = None;
-            if self.waiting_to_show_dialog {
-                self.waiting_to_show_dialog = false;
+            if self.state == AppState::AnalysisPending {
+                self.state = AppState::Ready;
                 if let Some(region) = result {
                     self.crop_dialog = CropDialog::Confirm { region };
                 }
@@ -487,7 +501,7 @@ impl eframe::App for App {
                     ui.label(format!("  {name}"));
                 }
 
-                if self.playing {
+                if matches!(self.state, AppState::Trimming | AppState::AnalysisPending) {
                     ui.spinner();
                     ui.weak("analysing…");
                 }
