@@ -44,7 +44,6 @@ pub struct App {
     motion_analyzer: MotionAnalyzer,
     pub variance_threshold: f32,
     active_region: Option<[u32; 4]>,
-    apply_crop: bool,
 
     // Full-video background analysis.
     analysis_rx: Option<Receiver<Option<[u32; 4]>>>,
@@ -73,7 +72,6 @@ impl App {
             motion_analyzer: MotionAnalyzer::default(),
             variance_threshold: 5.0,
             active_region: None,
-            apply_crop: false,
             analysis_rx: None,
             final_region: None,
             waiting_to_show_dialog: false,
@@ -484,8 +482,6 @@ impl eframe::App for App {
                         .fixed_decimals(1)
                         .suffix(" MAD"),
                 );
-                ui.separator();
-                ui.checkbox(&mut self.apply_crop, "Crop to active region");
                 if let Some([x, y, w, h]) = self.active_region {
                     ui.separator();
                     ui.weak(format!("live {w}×{h} @ ({x},{y})"));
@@ -515,22 +511,8 @@ impl eframe::App for App {
             let full_size = texture.size_vec2();
             let avail = ui.available_rect_before_wrap();
 
-            let (uv, effective) = match (self.apply_crop, self.active_region) {
-                (true, Some([rx, ry, rw, rh])) => {
-                    let uv = egui::Rect::from_min_max(
-                        egui::pos2(rx as f32 / full_size.x, ry as f32 / full_size.y),
-                        egui::pos2(
-                            (rx + rw) as f32 / full_size.x,
-                            (ry + rh) as f32 / full_size.y,
-                        ),
-                    );
-                    (uv, egui::vec2(rw as f32, rh as f32))
-                }
-                _ => (
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    full_size,
-                ),
-            };
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            let effective = full_size;
 
             let scale = (avail.width() / effective.x).min(avail.height() / effective.y);
             let disp_rect = egui::Rect::from_center_size(avail.center(), effective * scale);
@@ -538,36 +520,34 @@ impl eframe::App for App {
             let painter = ui.painter();
             painter.image(texture.id(), disp_rect, uv, egui::Color32::WHITE);
 
-            if !self.apply_crop {
-                let sx = disp_rect.width() / full_size.x;
-                let sy = disp_rect.height() / full_size.y;
+            let sx = disp_rect.width() / full_size.x;
+            let sy = disp_rect.height() / full_size.y;
 
-                let overlay = |rx: u32, ry: u32, rw: u32, rh: u32| {
-                    egui::Rect::from_min_size(
-                        disp_rect.min + egui::vec2(rx as f32 * sx, ry as f32 * sy),
-                        egui::vec2(rw as f32 * sx, rh as f32 * sy),
-                    )
-                };
+            let overlay = |rx: u32, ry: u32, rw: u32, rh: u32| {
+                egui::Rect::from_min_size(
+                    disp_rect.min + egui::vec2(rx as f32 * sx, ry as f32 * sy),
+                    egui::vec2(rw as f32 * sx, rh as f32 * sy),
+                )
+            };
 
-                // Yellow: live EMA region (updates every displayed frame).
-                if let Some([rx, ry, rw, rh]) = self.active_region {
-                    painter.rect_stroke(
-                        overlay(rx, ry, rw, rh),
-                        0.0,
-                        egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                        egui::StrokeKind::Outside,
-                    );
-                }
+            // Yellow: live EMA region (updates every displayed frame).
+            if let Some([rx, ry, rw, rh]) = self.active_region {
+                painter.rect_stroke(
+                    overlay(rx, ry, rw, rh),
+                    0.0,
+                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                    egui::StrokeKind::Outside,
+                );
+            }
 
-                // Cyan: full-video result (stable once analysis finishes).
-                if let Some([rx, ry, rw, rh]) = self.final_region {
-                    painter.rect_stroke(
-                        overlay(rx, ry, rw, rh),
-                        0.0,
-                        egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 220, 220)),
-                        egui::StrokeKind::Outside,
-                    );
-                }
+            // Cyan: full-video result (stable once analysis finishes).
+            if let Some([rx, ry, rw, rh]) = self.final_region {
+                painter.rect_stroke(
+                    overlay(rx, ry, rw, rh),
+                    0.0,
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 220, 220)),
+                    egui::StrokeKind::Outside,
+                );
             }
         });
     }
