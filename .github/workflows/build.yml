@@ -60,17 +60,27 @@ jobs:
   # macos-latest is Apple Silicon (arm64).  Cross-compiling for x86_64 from
   # an arm64 runner fails because pkg-config finds arm64 FFmpeg libraries.
   # We build the native arch only and let the runner determine it.
+  # brew now ships FFmpeg 8.x which is incompatible with ffmpeg-next = "7",
+  # so we download the same avbuild prebuilt used by the Linux job.
   build-macos:
     name: macOS
     runs-on: macos-latest
+    env:
+      FFMPEG_VERSION: "7.1"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install FFmpeg
+      - name: Install build dependencies
+        run: brew install pkg-config
+
+      - name: Download FFmpeg ${{ env.FFMPEG_VERSION }} (avbuild)
         run: |
-          brew install ffmpeg pkg-config
-          echo "FFMPEG_DIR=$(brew --prefix ffmpeg)" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$(brew --prefix ffmpeg)/lib/pkgconfig" >> "$GITHUB_ENV"
+          curl -L \
+            "https://sourceforge.net/projects/avbuild/files/macOS/ffmpeg-${{ env.FFMPEG_VERSION }}-macOS-default.tar.xz/download" \
+            -o ffmpeg.tar.xz
+          tar -xf ffmpeg.tar.xz
+          echo "FFMPEG_DIR=$PWD/ffmpeg-${{ env.FFMPEG_VERSION }}-macOS-default" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$PWD/ffmpeg-${{ env.FFMPEG_VERSION }}-macOS-default/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -89,15 +99,18 @@ jobs:
           if-no-files-found: error
 
   # ── Windows ────────────────────────────────────────────────────────────────
+  # gyan.dev's "latest" URL now resolves to FFmpeg 8.x.  Pin to the versioned
+  # GyanD/codexffmpeg release instead so it matches ffmpeg-next = "7".
   build-windows:
     name: Windows x86_64
     runs-on: windows-latest
     env:
-      FFMPEG_DOWNLOAD_URL: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z
+      FFMPEG_VERSION: "7.1"
+      FFMPEG_DOWNLOAD_URL: https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-full_build-shared.7z
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install FFmpeg (shared build from gyan.dev)
+      - name: Install FFmpeg ${{ env.FFMPEG_VERSION }} (GyanD release)
         run: |
           Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=C:\Program Files\LLVM\bin`n"
           Invoke-WebRequest "${env:FFMPEG_DOWNLOAD_URL}" -OutFile ffmpeg-release-full-shared.7z
