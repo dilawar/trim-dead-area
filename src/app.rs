@@ -223,9 +223,10 @@ impl App {
         if ended {
             self.on_playback_ended();
         } else {
-            // Ask for another repaint immediately so we keep consuming frames
-            // as fast as the decoder produces them.
-            ctx.request_repaint();
+            // Throttle display to ~8 fps. The decode thread runs freely between
+            // repaints, filling the channel buffer; all frames are decoded and
+            // analysed but only the latest one per window is shown.
+            ctx.request_repaint_after(std::time::Duration::from_millis(125));
         }
     }
 
