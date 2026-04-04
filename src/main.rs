@@ -122,3 +122,135 @@ fn main() -> eframe::Result {
         }),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_bbox_method ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_union_lowercase() {
+        assert_eq!(parse_bbox_method("union"), Ok(BboxMethod::Union));
+    }
+
+    #[test]
+    fn test_parse_union_uppercase() {
+        // Case-insensitive.
+        assert_eq!(parse_bbox_method("UNION"), Ok(BboxMethod::Union));
+    }
+
+    #[test]
+    fn test_parse_percentile_valid() {
+        assert_eq!(parse_bbox_method("percentile:5"), Ok(BboxMethod::Percentile(5.0)));
+    }
+
+    #[test]
+    fn test_parse_percentile_zero() {
+        assert_eq!(parse_bbox_method("percentile:0"), Ok(BboxMethod::Percentile(0.0)));
+    }
+
+    #[test]
+    fn test_parse_percentile_out_of_range() {
+        // p=50 is exactly on the boundary (valid range is 0–<50).
+        assert!(parse_bbox_method("percentile:50").is_err());
+    }
+
+    #[test]
+    fn test_parse_percentile_negative() {
+        assert!(parse_bbox_method("percentile:-1").is_err());
+    }
+
+    #[test]
+    fn test_parse_percentile_not_a_number() {
+        assert!(parse_bbox_method("percentile:abc").is_err());
+    }
+
+    #[test]
+    fn test_parse_density_filter_valid() {
+        assert_eq!(
+            parse_bbox_method("density-filter:2"),
+            Ok(BboxMethod::DensityFilter(2))
+        );
+    }
+
+    #[test]
+    fn test_parse_density_filter_zero() {
+        assert_eq!(
+            parse_bbox_method("density-filter:0"),
+            Ok(BboxMethod::DensityFilter(0))
+        );
+    }
+
+    #[test]
+    fn test_parse_density_filter_not_a_number() {
+        assert!(parse_bbox_method("density-filter:x").is_err());
+    }
+
+    #[test]
+    fn test_parse_erosion_valid() {
+        assert_eq!(parse_bbox_method("erosion:1"), Ok(BboxMethod::Erosion(1)));
+    }
+
+    #[test]
+    fn test_parse_erosion_zero() {
+        assert_eq!(parse_bbox_method("erosion:0"), Ok(BboxMethod::Erosion(0)));
+    }
+
+    #[test]
+    fn test_parse_erosion_max() {
+        assert_eq!(parse_bbox_method("erosion:4"), Ok(BboxMethod::Erosion(4)));
+    }
+
+    #[test]
+    fn test_parse_erosion_out_of_range() {
+        assert!(parse_bbox_method("erosion:5").is_err());
+    }
+
+    #[test]
+    fn test_parse_erosion_not_a_number() {
+        assert!(parse_bbox_method("erosion:x").is_err());
+    }
+
+    #[test]
+    fn test_parse_unknown_method() {
+        assert!(parse_bbox_method("foo").is_err());
+    }
+
+    #[test]
+    fn test_parse_empty_string() {
+        assert!(parse_bbox_method("").is_err());
+    }
+
+    // ── parse_analysis_fps ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_fps_valid() {
+        assert_eq!(parse_analysis_fps("6"), Ok(6.0));
+    }
+
+    #[test]
+    fn test_parse_fps_boundary_low() {
+        assert_eq!(parse_analysis_fps("1"), Ok(1.0));
+    }
+
+    #[test]
+    fn test_parse_fps_boundary_high() {
+        assert_eq!(parse_analysis_fps("30"), Ok(30.0));
+    }
+
+    #[test]
+    fn test_parse_fps_below_range() {
+        assert!(parse_analysis_fps("0").is_err());
+    }
+
+    #[test]
+    fn test_parse_fps_above_range() {
+        assert!(parse_analysis_fps("31").is_err());
+    }
+
+    #[test]
+    fn test_parse_fps_not_a_number() {
+        assert!(parse_analysis_fps("abc").is_err());
+    }
+}
