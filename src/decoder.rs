@@ -236,6 +236,7 @@ pub fn decode_video_with_analysis(
         let mut decoded = ffmpeg::util::frame::video::Video::empty();
         let mut rgba_frame = ffmpeg::util::frame::video::Video::empty();
         let mut frame_idx: u64 = 0;
+        const ANALYSIS_SKIP: u64 = 4; // analyse every 4th frame to keep the decode thread fast
 
         let make_frame = |decoded: &ffmpeg::util::frame::video::Video,
                           rgba_frame: &ffmpeg::util::frame::video::Video,
@@ -274,7 +275,9 @@ pub fn decode_video_with_analysis(
                     continue;
                 }
                 let frame = make_frame(&decoded, &rgba_frame, &mut frame_idx, tb);
-                analyzer.update(&frame);
+                if frame_idx % ANALYSIS_SKIP == 0 {
+                    analyzer.update(&frame);
+                }
                 if display_tx.send(Some(frame)).is_err() {
                     info!("display receiver dropped, stopping decode");
                     let _ = result_tx.send(analyzer.active_bbox(threshold));
@@ -287,7 +290,9 @@ pub fn decode_video_with_analysis(
         while decoder.receive_frame(&mut decoded).is_ok() {
             if scaler.run(&decoded, &mut rgba_frame).is_ok() {
                 let frame = make_frame(&decoded, &rgba_frame, &mut frame_idx, tb);
-                analyzer.update(&frame);
+                if frame_idx % ANALYSIS_SKIP == 0 {
+                    analyzer.update(&frame);
+                }
                 if display_tx.send(Some(frame)).is_err() {
                     info!("display receiver dropped during flush, stopping");
                     let _ = result_tx.send(analyzer.active_bbox(threshold));
