@@ -8,6 +8,8 @@ file to the area that actually has content.
 
 ## Demo
 
+### Example 1
+
 **Input** — original YouTube Short with static black borders:
 
 [![Input video](https://img.youtube.com/vi/X9FQ7-t45hU/0.jpg)](https://youtube.com/shorts/X9FQ7-t45hU?si=BQCwINot3tXfxBkf)
@@ -16,19 +18,29 @@ file to the area that actually has content.
 
 [![Output video](https://img.youtube.com/vi/5WyGapgk64A/0.jpg)](https://youtu.be/5WyGapgk64A)
 
+### Example 2
+
+**Input:**
+
+[![Input video](https://img.youtube.com/vi/FgazIG0-tdc/0.jpg)](https://youtube.com/shorts/FgazIG0-tdc)
+
+**Output:**
+
+[![Output video](https://img.youtube.com/vi/5cEXwQvjqcI/0.jpg)](https://youtube.com/shorts/5cEXwQvjqcI)
+
 ---
 
 ## How it works
 
-1. **Open a video.** The player starts immediately and runs through the frames
-   as fast as possible (no real-time throttle).
-2. **Two analyses run in parallel:**
+1. **Open a video.** The first frame is shown immediately as a preview.
+2. **Click Go.** A single decode pass begins, running two analyses in
+   lockstep on the same thread:
    - A *real-time* analyser computes a per-block motion score (EMA of
      mean-absolute-difference) for every displayed frame and draws a
      **yellow** bounding box around the live active region.
-   - A *background* pass decodes every 4th frame and accumulates the
-     mean MAD across the whole file, producing a more stable estimate.
-     When it finishes, a **cyan** bounding box appears.
+   - Every 4th frame is fed to a *full-video* accumulator that computes
+     the mean MAD across the whole file for a more stable estimate.
+     When playback ends, a **cyan** bounding box appears.
 3. **When playback ends** the crop dialog opens automatically, showing the
    most active region found by the full-video analysis.
 4. **Save the cropped video.** Confirm the dialog to choose an output path
@@ -47,7 +59,7 @@ Download the latest release for your platform from the
 | Platform | Archive |
 |---|---|
 | Linux x86\_64 | `trim-dead-area-linux-x86_64.tar.gz` |
-| macOS (universal) | `trim-dead-area-macos-universal.tar.gz` |
+| macOS (Apple Silicon) | `trim-dead-area-macos.tar.gz` |
 | Windows x86\_64 | `trim-dead-area-windows-x86_64.zip` (includes FFmpeg DLLs) |
 
 ### Build from source
@@ -93,16 +105,17 @@ brew install ffmpeg
 ### Opening a file
 
 - Click **Open File** and choose a video, or
-- **Drag and drop** a video file onto the window.
+- **Drag and drop** a video file onto the window, or
+- Pass the path as a command-line argument: `trim-dead-area video.mp4`
 
 Supported formats: anything FFmpeg can decode (MP4, MKV, AVI, MOV, WebM,
 FLV, WMV, TS, M4V, …).
 
-### Playback controls
+### Controls
 
 | Control | Action |
 |---|---|
-| **▶ Play / ⏸ Pause** | Toggle playback |
+| **Go** | Start (or restart) analysis from the beginning |
 | **Open File** | Load a new video |
 | Drag & drop | Load a new video |
 
@@ -111,7 +124,7 @@ The time display in the bottom-right shows the PTS of the last displayed frame.
 ### Motion threshold slider
 
 ```
-Motion threshold:  ──●────────  5.0 MAD
+Motion threshold:  ──●────────  5.0 MAD   (raise to ignore camera shake or compression noise)
 ```
 
 Controls which blocks are considered "active":
@@ -123,18 +136,15 @@ Controls which blocks are considered "active":
 The default of **5.0 MAD** (mean absolute difference, in 8-bit intensity
 units) works well for most screen recordings and lecture videos.
 
+If you adjust the slider while analysis is running, a prompt will ask whether
+to restart with the new value.
+
 ### Overlays
 
 | Colour | Meaning |
 |---|---|
 | **Yellow** | Live bounding box from the real-time EMA analyser — updates every displayed frame. |
-| **Cyan** | Stable bounding box from the full-video background analysis — appears once the background pass finishes. |
-
-### Crop-to-active-region (live preview)
-
-Tick **Crop to active region** to preview the display with the dead borders
-removed in real time. This does not write any file; it only affects what you
-see on screen.
+| **Cyan** | Stable bounding box from the full-video analysis — appears once playback ends. |
 
 ### Exporting the cropped video
 
@@ -157,7 +167,7 @@ When playback finishes the **Active Region Detected** dialog opens:
 1. Click **Save Cropped Video…** — a save dialog opens pre-filled with
    `<original-name>_cropped.<ext>`.
 2. Choose a location and confirm.
-3. A spinner shows while `ffmpeg` runs.  The output path is shown when done.
+3. A spinner shows while `ffmpeg` runs. The output path is shown when done.
 
 > The output is produced by `ffmpeg -vf crop=w:h:x:y -c:a copy`, so the
 > audio track is copied without re-encoding and video quality is determined
