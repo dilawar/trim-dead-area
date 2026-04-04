@@ -513,6 +513,7 @@ impl eframe::App for App {
                         .fixed_decimals(1)
                         .suffix(" MAD"),
                 );
+                ui.weak("(raise to ignore camera shake or compression noise)");
                 if let Some([x, y, w, h]) = self.active_region {
                     ui.separator();
                     ui.weak(format!("live {w}×{h} @ ({x},{y})"));
