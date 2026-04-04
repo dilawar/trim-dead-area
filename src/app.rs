@@ -75,12 +75,16 @@ pub struct App {
 
     /// Threshold value that was used to start the current analysis run.
     last_threshold: f32,
-    /// Show "MAD changed – restart?" prompt.
+    /// Frames per second of video time sampled for analysis (1–30).
+    pub analysis_fps: f32,
+    /// Analysis FPS value used to start the current run.
+    last_analysis_fps: f32,
+    /// Show "settings changed – restart?" prompt.
     restart_prompt: bool,
 }
 
 impl App {
-    pub fn new(_cc: &eframe::CreationContext, initial_file: Option<PathBuf>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext, initial_file: Option<PathBuf>, analysis_fps: f32) -> Self {
         let mut app = Self {
             state: AppState::Idle,
             file_path: None,
@@ -97,6 +101,8 @@ impl App {
             export_rx: None,
             preview_rx: None,
             last_threshold: 5.0,
+            analysis_fps,
+            last_analysis_fps: analysis_fps,
             restart_prompt: false,
         };
         if let Some(path) = initial_file {
@@ -141,7 +147,8 @@ impl App {
         info!(path = %path.display(), threshold = self.variance_threshold, "starting trim");
 
         let (tx, rx) = mpsc::sync_channel(30);
-        let analysis_rx = decode_video_with_analysis(path, tx, self.variance_threshold);
+        let analysis_rx =
+            decode_video_with_analysis(path, tx, self.variance_threshold, self.analysis_fps);
 
         self.state = AppState::Trimming;
         self.frame_rx = Some(rx);
@@ -156,6 +163,7 @@ impl App {
         self.export_rx = None;
         self.preview_rx = None;
         self.last_threshold = self.variance_threshold;
+        self.last_analysis_fps = self.analysis_fps;
         self.restart_prompt = false;
     }
 
@@ -415,11 +423,12 @@ impl App {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                ui.label("Analysis settings changed.");
                 ui.label(format!(
-                    "Motion threshold changed to {:.1} MAD.",
-                    self.variance_threshold
+                    "  Threshold: {:.1} MAD   Rate: {:.0} fps",
+                    self.variance_threshold, self.analysis_fps
                 ));
-                ui.label("Restart analysis from the beginning with the new value?");
+                ui.label("Restart analysis from the beginning with the new values?");
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("Restart").clicked() {
@@ -434,8 +443,9 @@ impl App {
         if restart {
             self.start_trim();
         } else if keep {
-            // Don't prompt again unless the threshold changes again.
+            // Don't prompt again unless the settings change again.
             self.last_threshold = self.variance_threshold;
+            self.last_analysis_fps = self.analysis_fps;
             self.restart_prompt = false;
         }
     }
@@ -458,10 +468,11 @@ impl eframe::App for App {
             self.open_file(path);
         }
 
-        // Detect MAD threshold change while analysis is running.
+        // Detect MAD threshold or analysis FPS change while analysis is running.
         if self.is_trimming()
             && !self.restart_prompt
-            && (self.variance_threshold - self.last_threshold).abs() > f32::EPSILON
+            && ((self.variance_threshold - self.last_threshold).abs() > f32::EPSILON
+                || (self.analysis_fps - self.last_analysis_fps).abs() > f32::EPSILON)
         {
             self.restart_prompt = true;
         }
@@ -530,6 +541,17 @@ impl eframe::App for App {
                     ui.separator();
                     ui.weak(format!("live {w}×{h} @ ({x},{y})"));
                 }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Analysis rate:");
+                ui.add(
+                    egui::Slider::new(&mut self.analysis_fps, 1.0..=30.0)
+                        .step_by(1.0)
+                        .fixed_decimals(0)
+                        .suffix(" fps"),
+                );
+                ui.weak("(frames per second of video time sampled for analysis)");
             });
 
             ui.add_space(6.0);

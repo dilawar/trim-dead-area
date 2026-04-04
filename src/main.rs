@@ -13,7 +13,27 @@ fn main() -> eframe::Result {
 
     info!("starting trim-dead-area v{}", env!("CARGO_PKG_VERSION"));
 
-    let initial_file: Option<PathBuf> = std::env::args().nth(1).map(PathBuf::from);
+    // Simple hand-rolled arg parsing: [--analysis-fps <N>] [<video>]
+    let mut initial_file: Option<PathBuf> = None;
+    let mut analysis_fps: f32 = 6.0;
+
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--analysis-fps" | "-r" => {
+                if let Some(val) = args.next() {
+                    if let Ok(n) = val.parse::<f32>() {
+                        analysis_fps = n.clamp(1.0, 30.0);
+                    } else {
+                        eprintln!("trim-dead-area: invalid --analysis-fps value: {val}");
+                    }
+                }
+            }
+            _ => {
+                initial_file = Some(PathBuf::from(arg));
+            }
+        }
+    }
 
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -25,6 +45,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Trim Dead Area",
         native_options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, initial_file)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, initial_file, analysis_fps)))),
     )
 }

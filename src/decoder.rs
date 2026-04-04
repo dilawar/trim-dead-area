@@ -166,10 +166,13 @@ pub fn decode_video(path: PathBuf, tx: SyncSender<Option<VideoFrame>>) {
 /// inline on the same thread. The analysis result is sent over the returned
 /// channel immediately after the last display frame, so it arrives at the UI
 /// with essentially zero extra lag after playback ends.
+/// Like [`decode_video`] but samples the video at `analysis_fps` frames per
+/// second of video time for analysis, regardless of the source frame rate.
 pub fn decode_video_with_analysis(
     path: PathBuf,
     display_tx: SyncSender<Option<VideoFrame>>,
     threshold: f32,
+    analysis_fps: f32,
 ) -> Receiver<Option<[u32; 4]>> {
     use crate::analysis::FullVideoAnalyzer;
 
@@ -236,7 +239,9 @@ pub fn decode_video_with_analysis(
         let mut decoded = ffmpeg::util::frame::video::Video::empty();
         let mut rgba_frame = ffmpeg::util::frame::video::Video::empty();
         let mut frame_idx: u64 = 0;
-        const ANALYSIS_SKIP: u64 = 4; // analyse every 4th frame to keep the decode thread fast
+        // PTS of the last frame fed to the analyser; initialised so the first frame is always analysed.
+        let mut last_analysis_pts: f64 = f64::NEG_INFINITY;
+        let analysis_interval = 1.0 / analysis_fps.max(0.1) as f64;
 
         let make_frame = |decoded: &ffmpeg::util::frame::video::Video,
                           rgba_frame: &ffmpeg::util::frame::video::Video,
@@ -275,8 +280,9 @@ pub fn decode_video_with_analysis(
                     continue;
                 }
                 let frame = make_frame(&decoded, &rgba_frame, &mut frame_idx, tb);
-                if frame_idx % ANALYSIS_SKIP == 0 {
+                if frame.pts_secs - last_analysis_pts >= analysis_interval {
                     analyzer.update(&frame);
+                    last_analysis_pts = frame.pts_secs;
                 }
                 match display_tx.try_send(Some(frame)) {
                     Ok(()) => {}
@@ -294,8 +300,9 @@ pub fn decode_video_with_analysis(
         while decoder.receive_frame(&mut decoded).is_ok() {
             if scaler.run(&decoded, &mut rgba_frame).is_ok() {
                 let frame = make_frame(&decoded, &rgba_frame, &mut frame_idx, tb);
-                if frame_idx % ANALYSIS_SKIP == 0 {
+                if frame.pts_secs - last_analysis_pts >= analysis_interval {
                     analyzer.update(&frame);
+                    last_analysis_pts = frame.pts_secs;
                 }
                 match display_tx.try_send(Some(frame)) {
                     Ok(()) => {}
