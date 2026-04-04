@@ -278,10 +278,14 @@ pub fn decode_video_with_analysis(
                 if frame_idx % ANALYSIS_SKIP == 0 {
                     analyzer.update(&frame);
                 }
-                if display_tx.send(Some(frame)).is_err() {
-                    info!("display receiver dropped, stopping decode");
-                    let _ = result_tx.send(analyzer.active_bbox(threshold));
-                    return;
+                match display_tx.try_send(Some(frame)) {
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(_)) => {} // UI busy — drop display frame, analysis already done
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        info!("display receiver dropped, stopping decode");
+                        let _ = result_tx.send(analyzer.active_bbox(threshold));
+                        return;
+                    }
                 }
             }
         }
@@ -293,10 +297,14 @@ pub fn decode_video_with_analysis(
                 if frame_idx % ANALYSIS_SKIP == 0 {
                     analyzer.update(&frame);
                 }
-                if display_tx.send(Some(frame)).is_err() {
-                    info!("display receiver dropped during flush, stopping");
-                    let _ = result_tx.send(analyzer.active_bbox(threshold));
-                    return;
+                match display_tx.try_send(Some(frame)) {
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(_)) => {}
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        info!("display receiver dropped during flush, stopping");
+                        let _ = result_tx.send(analyzer.active_bbox(threshold));
+                        return;
+                    }
                 }
             }
         }
