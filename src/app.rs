@@ -5,7 +5,7 @@ use std::thread;
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use tracing::{debug, info, warn};
 
-use crate::analysis::{analyze_file_async, MotionAnalyzer};
+use crate::analysis::{FullVideoAnalyzer, MotionAnalyzer};
 use crate::decoder::{decode_video, VideoFrame};
 use crate::writer::crop_video_async;
 
@@ -45,12 +45,9 @@ pub struct App {
     pub variance_threshold: f32,
     active_region: Option<[u32; 4]>,
 
-    // Full-video background analysis.
-    analysis_rx: Option<Receiver<Option<[u32; 4]>>>,
+    // Full-video analysis (fed inline from the display decode frames).
+    full_analyzer: FullVideoAnalyzer,
     final_region: Option<[u32; 4]>,
-    /// Set when playback finishes before analysis; dialog is shown once
-    /// the analysis result arrives.
-    waiting_to_show_dialog: bool,
     crop_dialog: CropDialog,
     export_rx: Option<Receiver<Result<(), String>>>,
 
@@ -75,9 +72,8 @@ impl App {
             motion_analyzer: MotionAnalyzer::default(),
             variance_threshold: 5.0,
             active_region: None,
-            analysis_rx: None,
+            full_analyzer: FullVideoAnalyzer::new(),
             final_region: None,
-            waiting_to_show_dialog: false,
             crop_dialog: CropDialog::Hidden,
             export_rx: None,
             preview_rx: None,
@@ -109,9 +105,8 @@ impl App {
         self.error = None;
         self.motion_analyzer.reset();
         self.active_region = None;
-        self.analysis_rx = None;
+        self.full_analyzer = FullVideoAnalyzer::new();
         self.final_region = None;
-        self.waiting_to_show_dialog = false;
         self.crop_dialog = CropDialog::Hidden;
         self.export_rx = None;
         self.preview_rx = Some(rx);
@@ -132,8 +127,6 @@ impl App {
             move || decode_video(path, tx)
         });
 
-        let analysis_rx = analyze_file_async(path, 4, self.variance_threshold);
-
         self.frame_rx = Some(rx);
         self.playing = true;
         self.current_pts = 0.0;
@@ -141,9 +134,8 @@ impl App {
         self.error = None;
         self.motion_analyzer.reset();
         self.active_region = None;
-        self.analysis_rx = Some(analysis_rx);
+        self.full_analyzer = FullVideoAnalyzer::new();
         self.final_region = None;
-        self.waiting_to_show_dialog = false;
         self.crop_dialog = CropDialog::Hidden;
         self.export_rx = None;
         self.preview_rx = None;
@@ -152,7 +144,7 @@ impl App {
     }
 
     fn is_trimming(&self) -> bool {
-        self.playing || self.analysis_rx.is_some()
+        self.playing
     }
 
     // ── Preview (first-frame thumbnail on file load) ─────────────────────────
@@ -178,18 +170,24 @@ impl App {
         if !self.playing {
             return;
         }
-        let rx = match &self.frame_rx {
-            Some(rx) => rx,
-            None => return,
-        };
+        if self.frame_rx.is_none() {
+            return;
+        }
 
         let mut latest: Option<VideoFrame> = None;
         let mut ended = false;
 
+        // Drop the borrow of frame_rx before the loop body so we can also
+        // borrow full_analyzer mutably on each frame.
         loop {
-            match rx.try_recv() {
+            let msg = match &self.frame_rx {
+                Some(rx) => rx.try_recv(),
+                None => break,
+            };
+            match msg {
                 Ok(Some(frame)) => {
-                    latest = Some(frame); // keep draining; skip intermediate frames
+                    self.full_analyzer.update(&frame);
+                    latest = Some(frame);
                 }
                 Ok(None) => {
                     ended = true;
@@ -221,11 +219,11 @@ impl App {
 
     fn on_playback_ended(&mut self) {
         info!(final_pts = self.current_pts, "playback ended");
-        if let Some(region) = self.final_region {
+        let region = self.full_analyzer.active_bbox(self.variance_threshold);
+        info!(region = ?region, "full-video analysis done");
+        self.final_region = region;
+        if let Some(region) = region {
             self.crop_dialog = CropDialog::Confirm { region };
-        } else {
-            // Analysis is still running; show the dialog once it delivers.
-            self.waiting_to_show_dialog = true;
         }
     }
 
@@ -245,24 +243,6 @@ impl App {
             None => {
                 self.texture =
                     Some(ctx.load_texture("video_frame", image, TextureOptions::default()));
-            }
-        }
-    }
-
-    // ── Background channel polling ───────────────────────────────────────────
-
-    fn poll_analysis(&mut self) {
-        let Some(rx) = &self.analysis_rx else { return };
-        if let Ok(result) = rx.try_recv() {
-            info!(region = ?result, "background analysis complete");
-            self.final_region = result;
-            self.analysis_rx = None;
-            // If playback has already ended, show the dialog now.
-            if self.waiting_to_show_dialog {
-                self.waiting_to_show_dialog = false;
-                if let Some(region) = result {
-                    self.crop_dialog = CropDialog::Confirm { region };
-                }
             }
         }
     }
@@ -433,7 +413,6 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_preview(ctx);
         self.poll_frames(ctx);
-        self.poll_analysis();
         self.poll_export();
 
         // Keep repainting while export spinner is shown.
@@ -490,7 +469,7 @@ impl eframe::App for App {
                     ui.label(format!("  {name}"));
                 }
 
-                if self.analysis_rx.is_some() {
+                if self.playing {
                     ui.spinner();
                     ui.weak("analysing…");
                 }

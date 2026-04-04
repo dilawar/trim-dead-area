@@ -83,7 +83,7 @@ impl MotionAnalyzer {
 
 /// Accumulates the **mean** inter-frame MAD across all analysed frames so that
 /// every sample contributes equally, unlike the EMA which emphasises recent frames.
-struct FullVideoAnalyzer {
+pub struct FullVideoAnalyzer {
     prev_gray: Vec<u8>,
     mad_sum: Vec<f64>,
     frames: u64,
@@ -94,7 +94,7 @@ struct FullVideoAnalyzer {
 }
 
 impl FullVideoAnalyzer {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             prev_gray: Vec::new(),
             mad_sum: Vec::new(),
@@ -106,7 +106,7 @@ impl FullVideoAnalyzer {
         }
     }
 
-    fn update(&mut self, frame: &VideoFrame) {
+    pub fn update(&mut self, frame: &VideoFrame) {
         let w = frame.width as usize;
         let h = frame.height as usize;
         let cols = w.div_ceil(BLOCK);
@@ -131,7 +131,7 @@ impl FullVideoAnalyzer {
         self.frames += 1;
     }
 
-    fn active_bbox(&self, threshold: f32) -> Option<[u32; 4]> {
+    pub fn active_bbox(&self, threshold: f32) -> Option<[u32; 4]> {
         if self.frames == 0 {
             return None;
         }
