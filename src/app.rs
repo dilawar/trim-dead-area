@@ -29,6 +29,8 @@ pub enum AppState {
 
 enum CropDialog {
     Hidden,
+    /// Analysis finished but no block exceeded the MAD threshold.
+    NoRegion,
     Confirm {
         region: [u32; 4],
     },
@@ -266,14 +268,20 @@ impl App {
 
     fn on_playback_ended(&mut self) {
         info!(final_pts = self.current_pts, "playback ended");
-        if let Some(region) = self.final_region {
-            self.state = AppState::Ready;
-            self.crop_dialog = CropDialog::Confirm { region };
-        } else {
-            // Analysis result hasn't arrived yet; transition to AnalysisPending
-            // so poll_analysis knows to show the dialog when the result arrives.
-            self.state = AppState::AnalysisPending;
-        }
+        self.state = AppState::Ready;
+        self.crop_dialog = match (self.final_region, self.analysis_rx.is_some()) {
+            (Some(region), _) => CropDialog::Confirm { region },
+            (None, true) => {
+                // Analysis result hasn't arrived yet — wait for it.
+                self.state = AppState::AnalysisPending;
+                return;
+            }
+            (None, false) => {
+                // Analysis already finished with no result (poll_analysis cleared
+                // analysis_rx before playback ended).
+                CropDialog::NoRegion
+            }
+        };
     }
 
     // ── Analysis result polling ──────────────────────────────────────────────
@@ -286,9 +294,10 @@ impl App {
             self.analysis_rx = None;
             if self.state == AppState::AnalysisPending {
                 self.state = AppState::Ready;
-                if let Some(region) = result {
-                    self.crop_dialog = CropDialog::Confirm { region };
-                }
+                self.crop_dialog = match result {
+                    Some(region) => CropDialog::Confirm { region },
+                    None => CropDialog::NoRegion,
+                };
             }
         }
     }
@@ -352,6 +361,16 @@ impl App {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| match &self.crop_dialog {
+                CropDialog::NoRegion => {
+                    ui.label("No active region detected.");
+                    ui.add_space(4.0);
+                    ui.label("Every block had motion below the threshold.\nTry lowering the Motion threshold and running again.");
+                    ui.add_space(6.0);
+                    if ui.button("Close").clicked() {
+                        action = Some(Action::Dismiss);
+                    }
+                }
+
                 CropDialog::Confirm { region } => {
                     let [x, y, w, h] = *region;
                     ui.label("The most active region across the full video:");
@@ -604,6 +623,12 @@ impl eframe::App for App {
                 } else {
                     ui.weak("(video time sampled per second)");
                 }
+            });
+
+            // Debug state label — only compiled into debug builds.
+            #[cfg(debug_assertions)]
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                ui.weak(format!("{:?}", self.state));
             });
 
             ui.add_space(6.0);
