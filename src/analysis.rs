@@ -93,6 +93,12 @@ pub struct FullVideoAnalyzer {
     rows: usize,
 }
 
+impl Default for FullVideoAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FullVideoAnalyzer {
     pub fn new() -> Self {
         Self {
