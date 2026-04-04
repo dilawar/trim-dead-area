@@ -6,8 +6,6 @@ file to the area that actually has content.
 
 ## Demo
 
-https://youtu.be/
-
 [![Demo](https://img.youtube.com/vi/tFr4RkUZhgo/0.jpg)](https://www.youtube.com/watch?v=tFr4RkUZhgo)
 
 ## How it works
