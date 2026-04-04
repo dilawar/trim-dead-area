@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use tracing::info;
 use trim_dead_area::app::App;
+use trim_dead_area::bbox::BboxMethod;
 
 /// Detect and crop static dead borders from a video file.
 ///
@@ -29,6 +30,20 @@ struct Cli {
     /// frequently the source video was keyframed (usually every 1–5 s).
     #[arg(short, long)]
     fast: bool,
+
+    /// Bounding-box computation method (advanced).
+    ///
+    /// Controls how the per-block motion scores are reduced to a single crop
+    /// rectangle. Useful when isolated noise blocks distort the result.
+    ///
+    /// Values:
+    ///   union              — tight envelope of every active block (default)
+    ///   percentile:<P>     — trim P% from each edge (e.g. percentile:5)
+    ///   density-filter:<N> — require ≥ N active blocks per row/col (e.g. density-filter:2)
+    ///   erosion:<N>        — require ≥ N active 4-neighbours (e.g. erosion:1)
+    #[arg(long, value_name = "METHOD", default_value = "union",
+          value_parser = parse_bbox_method)]
+    bbox_method: BboxMethod,
 }
 
 fn parse_analysis_fps(s: &str) -> Result<f32, String> {
@@ -37,6 +52,39 @@ fn parse_analysis_fps(s: &str) -> Result<f32, String> {
         return Err(format!("{n} is out of range (1–30)"));
     }
     Ok(n)
+}
+
+fn parse_bbox_method(s: &str) -> Result<BboxMethod, String> {
+    if s.eq_ignore_ascii_case("union") {
+        return Ok(BboxMethod::Union);
+    }
+    if let Some(rest) = s.strip_prefix("percentile:") {
+        let p: f32 = rest
+            .parse()
+            .map_err(|_| format!("percentile value '{rest}' is not a valid number"))?;
+        if !(0.0..50.0).contains(&p) {
+            return Err(format!("percentile {p} is out of range (0–49.9)"));
+        }
+        return Ok(BboxMethod::Percentile(p));
+    }
+    if let Some(rest) = s.strip_prefix("density-filter:") {
+        let n: usize = rest
+            .parse()
+            .map_err(|_| format!("density-filter value '{rest}' is not a valid integer"))?;
+        return Ok(BboxMethod::DensityFilter(n));
+    }
+    if let Some(rest) = s.strip_prefix("erosion:") {
+        let n: usize = rest
+            .parse()
+            .map_err(|_| format!("erosion value '{rest}' is not a valid integer"))?;
+        if n > 4 {
+            return Err(format!("erosion {n} is out of range (0–4)"));
+        }
+        return Ok(BboxMethod::Erosion(n));
+    }
+    Err(format!(
+        "unknown bbox method '{s}'. Expected: union, percentile:<P>, density-filter:<N>, erosion:<N>"
+    ))
 }
 
 fn main() -> eframe::Result {
@@ -67,6 +115,7 @@ fn main() -> eframe::Result {
                 cli.file,
                 cli.analysis_fps,
                 cli.fast,
+                cli.bbox_method,
             )))
         }),
     )

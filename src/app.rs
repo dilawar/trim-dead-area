@@ -103,6 +103,7 @@ impl App {
         initial_file: Option<PathBuf>,
         analysis_fps: f32,
         fast: bool,
+        bbox_method: BboxMethod,
     ) -> Self {
         let analysis_mode = if fast { AnalysisMode::Fast } else { AnalysisMode::Full };
         let mut app = Self {
@@ -126,7 +127,7 @@ impl App {
             last_analysis_fps: analysis_fps,
             analysis_mode,
             last_analysis_mode: analysis_mode,
-            bbox_method: BboxMethod::default(),
+            bbox_method,
             restart_prompt: false,
         };
         if let Some(path) = initial_file {
@@ -673,6 +674,133 @@ impl eframe::App for App {
                     ui.weak("(video time sampled per second)");
                 }
             });
+
+            egui::CollapsingHeader::new("Advanced")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Bbox method:");
+
+                        // Discriminant index for the ComboBox (avoids PartialEq issues
+                        // with parametric variants).
+                        let selected = match self.bbox_method {
+                            BboxMethod::Union => 0u8,
+                            BboxMethod::Percentile(_) => 1,
+                            BboxMethod::DensityFilter(_) => 2,
+                            BboxMethod::Erosion(_) => 3,
+                        };
+                        let labels = ["Union", "Percentile", "Density filter", "Erosion"];
+                        let mut new_selected = selected;
+
+                        egui::ComboBox::from_id_salt("bbox_method")
+                            .selected_text(labels[selected as usize])
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut new_selected, 0, "Union")
+                                    .on_hover_text(
+                                        "Tight bounding box enclosing every active block.\n\
+                                         One isolated hot pixel anywhere in the frame\n\
+                                         will expand the crop region to include it.",
+                                    );
+                                ui.selectable_value(&mut new_selected, 1, "Percentile")
+                                    .on_hover_text(
+                                        "Trim the P% most extreme active blocks from each\n\
+                                         edge before computing the envelope.\n\
+                                         Robust against isolated outlier blocks.",
+                                    );
+                                ui.selectable_value(&mut new_selected, 2, "Density filter")
+                                    .on_hover_text(
+                                        "Only include a row or column if it contains at\n\
+                                         least N active blocks. Strips sparse border rows\n\
+                                         while preserving dense motion regions.",
+                                    );
+                                ui.selectable_value(&mut new_selected, 3, "Erosion")
+                                    .on_hover_text(
+                                        "A block survives only if at least N of its\n\
+                                         4-connected neighbours are also active.\n\
+                                         Removes isolated hot spots while keeping\n\
+                                         large contiguous motion regions intact.",
+                                    );
+                            });
+
+                        // When the variant changes, initialise with a sensible default param.
+                        if new_selected != selected {
+                            self.bbox_method = match new_selected {
+                                0 => BboxMethod::Union,
+                                1 => BboxMethod::Percentile(5.0),
+                                2 => BboxMethod::DensityFilter(2),
+                                _ => BboxMethod::Erosion(1),
+                            };
+                        }
+
+                        // Per-variant parameter control.
+                        match &mut self.bbox_method {
+                            BboxMethod::Percentile(p) => {
+                                ui.add(
+                                    egui::Slider::new(p, 1.0_f32..=49.0)
+                                        .step_by(1.0)
+                                        .fixed_decimals(0)
+                                        .suffix("%"),
+                                )
+                                .on_hover_text(
+                                    "Percentage of active-block coordinates trimmed\n\
+                                     from each edge (1–49 %). Higher values ignore\n\
+                                     more outliers but may shrink the crop box.",
+                                );
+                            }
+                            BboxMethod::DensityFilter(n) => {
+                                let mut nf = *n as f32;
+                                if ui
+                                    .add(
+                                        egui::Slider::new(&mut nf, 1.0_f32..=16.0)
+                                            .step_by(1.0)
+                                            .fixed_decimals(0)
+                                            .suffix(" blocks"),
+                                    )
+                                    .on_hover_text(
+                                        "Minimum number of active blocks required in a\n\
+                                         row or column for it to be included (1–16).",
+                                    )
+                                    .changed()
+                                {
+                                    *n = nf as usize;
+                                }
+                            }
+                            BboxMethod::Erosion(n) => {
+                                let mut nf = *n as f32;
+                                if ui
+                                    .add(
+                                        egui::Slider::new(&mut nf, 0.0_f32..=4.0)
+                                            .step_by(1.0)
+                                            .fixed_decimals(0)
+                                            .suffix(" neighbours"),
+                                    )
+                                    .on_hover_text(
+                                        "Minimum number of active 4-connected neighbours\n\
+                                         a block must have to survive (0–4).\n\
+                                         0 is equivalent to Union.",
+                                    )
+                                    .changed()
+                                {
+                                    *n = nf as usize;
+                                }
+                            }
+                            BboxMethod::Union => {}
+                        }
+
+                        ui.add_space(8.0);
+                        let desc = match self.bbox_method {
+                            BboxMethod::Union =>
+                                "strict union — every active block counts",
+                            BboxMethod::Percentile(_) =>
+                                "trims coordinate outliers from each edge",
+                            BboxMethod::DensityFilter(_) =>
+                                "requires dense rows/columns",
+                            BboxMethod::Erosion(_) =>
+                                "requires active neighbours",
+                        };
+                        ui.weak(desc);
+                    });
+                });
 
             // Debug state label — only compiled into debug builds.
             #[cfg(debug_assertions)]
