@@ -6,6 +6,7 @@ use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use tracing::{debug, info, warn};
 
 use crate::analysis::MotionAnalyzer;
+use crate::bbox::BboxMethod;
 use crate::decoder::{decode_video, decode_video_with_analysis, AnalysisMode, VideoFrame};
 use crate::writer::crop_video_async;
 
@@ -90,6 +91,8 @@ pub struct App {
     pub analysis_mode: AnalysisMode,
     /// Analysis mode used to start the current run.
     last_analysis_mode: AnalysisMode,
+    /// Bounding box computation method (no GUI control yet — defaults to Union).
+    pub bbox_method: BboxMethod,
     /// Show "settings changed – restart?" prompt.
     restart_prompt: bool,
 }
@@ -123,6 +126,7 @@ impl App {
             last_analysis_fps: analysis_fps,
             analysis_mode,
             last_analysis_mode: analysis_mode,
+            bbox_method: BboxMethod::default(),
             restart_prompt: false,
         };
         if let Some(path) = initial_file {
@@ -194,6 +198,7 @@ impl App {
             self.variance_threshold,
             self.analysis_fps,
             self.analysis_mode,
+            self.bbox_method,
         );
 
         self.state = AppState::Trimming;
@@ -351,7 +356,7 @@ impl App {
     }
 
     fn upload_frame(&mut self, ctx: &egui::Context, frame: VideoFrame) {
-        let new_region = self.motion_analyzer.update(&frame, self.variance_threshold);
+        let new_region = self.motion_analyzer.update(&frame, self.variance_threshold, self.bbox_method);
         if new_region != self.active_region {
             debug!(region = ?new_region, "active region changed");
             self.active_region = new_region;

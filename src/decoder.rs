@@ -3,6 +3,8 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 
 use tracing::{debug, error, info, warn};
 
+use crate::bbox::BboxMethod;
+
 /// A single decoded video frame in packed RGBA format.
 pub struct VideoFrame {
     pub rgba: Vec<u8>,
@@ -203,6 +205,7 @@ pub fn decode_video_with_analysis(
     threshold: f32,
     analysis_fps: f32,
     mode: AnalysisMode,
+    method: BboxMethod,
 ) -> Receiver<Option<[u32; 4]>> {
     use crate::analysis::FullVideoAnalyzer;
 
@@ -369,7 +372,7 @@ pub fn decode_video_with_analysis(
                     Ok(()) | Err(mpsc::TrySendError::Full(_)) => true,
                     Err(mpsc::TrySendError::Disconnected(_)) => {
                         info!("display receiver dropped, stopping decode");
-                        let _ = result_tx.send(analyzer.active_bbox(threshold));
+                        let _ = result_tx.send(analyzer.active_bbox(threshold, method));
                         false
                     }
                 }
@@ -398,7 +401,7 @@ pub fn decode_video_with_analysis(
             }
         }
 
-        let result = analyzer.active_bbox(threshold);
+        let result = analyzer.active_bbox(threshold, method);
         info!(total_frames = frame_idx, region = ?result, "decode+analysis finished");
         let _ = result_tx.send(result);
         let _ = display_tx.send(None);

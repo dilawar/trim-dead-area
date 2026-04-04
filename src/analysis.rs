@@ -3,12 +3,9 @@ use std::sync::mpsc::{self, Receiver};
 
 use tracing::{debug, error, info, trace};
 
+use crate::bbox::{compute_bbox, BboxMethod};
 use crate::decoder::VideoFrame;
-
-// ── Block size ───────────────────────────────────────────────────────────────
-
-/// Side length (in pixels) of each analysis block.
-const BLOCK: usize = 16;
+use crate::BLOCK;
 
 // ── Real-time analyser (EMA, used during playback) ───────────────────────────
 
@@ -34,7 +31,7 @@ impl MotionAnalyzer {
     /// Feed the next displayed frame. Returns the smallest bounding box
     /// `[x, y, w, h]` (pixel coords) covering every block whose EMA motion
     /// score ≥ `threshold`, or `None` while warming up.
-    pub fn update(&mut self, frame: &VideoFrame, threshold: f32) -> Option<[u32; 4]> {
+    pub fn update(&mut self, frame: &VideoFrame, threshold: f32, method: BboxMethod) -> Option<[u32; 4]> {
         let w = frame.width as usize;
         let h = frame.height as usize;
         let cols = w.div_ceil(BLOCK);
@@ -68,13 +65,14 @@ impl MotionAnalyzer {
         }
         self.prev_gray = gray;
 
-        active_bbox(
+        compute_bbox(
             &self.motion_map,
             self.cols,
             self.rows,
             self.frame_width,
             self.frame_height,
             threshold,
+            method,
         )
     }
 }
@@ -151,7 +149,7 @@ impl FullVideoAnalyzer {
         self.frames += 1;
     }
 
-    pub fn active_bbox(&self, threshold: f32) -> Option<[u32; 4]> {
+    pub fn active_bbox(&self, threshold: f32, method: BboxMethod) -> Option<[u32; 4]> {
         if self.frames == 0 {
             return None;
         }
@@ -162,13 +160,14 @@ impl FullVideoAnalyzer {
             .map(|&s| (s / self.frames as f64) as f32)
             .collect();
 
-        active_bbox(
+        compute_bbox(
             &mean_map,
             self.cols,
             self.rows,
             self.frame_width,
             self.frame_height,
             threshold,
+            method,
         )
     }
 }
@@ -183,17 +182,18 @@ pub fn analyze_file_async(
     path: std::path::PathBuf,
     skip: usize,
     threshold: f32,
+    method: BboxMethod,
 ) -> Receiver<Option<[u32; 4]>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = run_analysis(&path, skip, threshold);
+        let result = run_analysis(&path, skip, threshold, method);
         let _ = tx.send(result);
     });
     rx
 }
 
 #[tracing::instrument(skip_all, fields(path = %path.display(), skip, threshold))]
-fn run_analysis(path: &Path, skip: usize, threshold: f32) -> Option<[u32; 4]> {
+fn run_analysis(path: &Path, skip: usize, threshold: f32, method: BboxMethod) -> Option<[u32; 4]> {
     use ffmpeg::format::Pixel;
     use ffmpeg::media::Type;
     use ffmpeg::software::scaling::{context::Context as ScaleCtx, flag::Flags};
@@ -309,7 +309,7 @@ fn run_analysis(path: &Path, skip: usize, threshold: f32) -> Option<[u32; 4]> {
         frame_idx += 1;
     }
 
-    let result = analyzer.active_bbox(threshold);
+    let result = analyzer.active_bbox(threshold, method);
     info!(
         frames_decoded = frame_idx,
         frames_analysed = analyzer.frames,
@@ -343,41 +343,3 @@ fn block_mad(gray: &[u8], prev: &[u8], stride: usize, bx: usize, by: usize) -> f
     sum as f32 / n
 }
 
-fn active_bbox(
-    map: &[f32],
-    cols: usize,
-    rows: usize,
-    fw: u32,
-    fh: u32,
-    threshold: f32,
-) -> Option<[u32; 4]> {
-    let w = fw as usize;
-    let h = fh as usize;
-    let mut min_col = cols;
-    let mut max_col = 0usize;
-    let mut min_row = rows;
-    let mut max_row = 0usize;
-    let mut found = false;
-
-    for by in 0..rows {
-        for bx in 0..cols {
-            if map[by * cols + bx] >= threshold {
-                min_col = min_col.min(bx);
-                max_col = max_col.max(bx);
-                min_row = min_row.min(by);
-                max_row = max_row.max(by);
-                found = true;
-            }
-        }
-    }
-
-    if !found {
-        return None;
-    }
-
-    let px = (min_col * BLOCK) as u32;
-    let py = (min_row * BLOCK) as u32;
-    let pw = ((max_col + 1) * BLOCK).min(w) as u32 - px;
-    let ph = ((max_row + 1) * BLOCK).min(h) as u32 - py;
-    Some([px, py, pw, ph])
-}
