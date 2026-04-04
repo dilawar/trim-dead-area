@@ -54,6 +54,9 @@ pub struct App {
     crop_dialog: CropDialog,
     export_rx: Option<Receiver<Result<(), String>>>,
 
+    /// Single-frame preview decoded when a file is first loaded.
+    preview_rx: Option<Receiver<Option<VideoFrame>>>,
+
     /// Threshold value that was used to start the current analysis run.
     last_threshold: f32,
     /// Show "MAD changed – restart?" prompt.
@@ -77,6 +80,7 @@ impl App {
             waiting_to_show_dialog: false,
             crop_dialog: CropDialog::Hidden,
             export_rx: None,
+            preview_rx: None,
             last_threshold: 5.0,
             restart_prompt: false,
         };
@@ -86,9 +90,17 @@ impl App {
         app
     }
 
-    /// Load a file without starting analysis. Resets all transient state.
+    /// Load a file without starting analysis. Resets all transient state and
+    /// kicks off a background decode of the first frame for preview.
     pub fn open_file(&mut self, path: PathBuf) {
         info!(path = %path.display(), "file loaded");
+
+        let (tx, rx) = mpsc::sync_channel(1);
+        thread::spawn({
+            let path = path.clone();
+            move || decode_video(path, tx)
+        });
+
         self.file_path = Some(path);
         self.frame_rx = None;
         self.playing = false;
@@ -102,6 +114,7 @@ impl App {
         self.waiting_to_show_dialog = false;
         self.crop_dialog = CropDialog::Hidden;
         self.export_rx = None;
+        self.preview_rx = Some(rx);
         self.restart_prompt = false;
     }
 
@@ -133,12 +146,25 @@ impl App {
         self.waiting_to_show_dialog = false;
         self.crop_dialog = CropDialog::Hidden;
         self.export_rx = None;
+        self.preview_rx = None;
         self.last_threshold = self.variance_threshold;
         self.restart_prompt = false;
     }
 
     fn is_trimming(&self) -> bool {
         self.playing || self.analysis_rx.is_some()
+    }
+
+    // ── Preview (first-frame thumbnail on file load) ─────────────────────────
+
+    fn poll_preview(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.preview_rx else { return };
+        if let Ok(Some(frame)) = rx.try_recv() {
+            self.upload_frame(ctx, frame);
+            // Drop the receiver — the decode thread will get a send error and exit.
+            self.preview_rx = None;
+            ctx.request_repaint();
+        }
     }
 
     // ── Frame polling ────────────────────────────────────────────────────────
@@ -405,6 +431,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_preview(ctx);
         self.poll_frames(ctx);
         self.poll_analysis();
         self.poll_export();
