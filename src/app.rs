@@ -54,6 +54,11 @@ pub struct App {
     waiting_to_show_dialog: bool,
     crop_dialog: CropDialog,
     export_rx: Option<Receiver<Result<(), String>>>,
+
+    /// Threshold value that was used to start the current analysis run.
+    last_threshold: f32,
+    /// Show "MAD changed – restart?" prompt.
+    restart_prompt: bool,
 }
 
 impl App {
@@ -74,6 +79,8 @@ impl App {
             waiting_to_show_dialog: false,
             crop_dialog: CropDialog::Hidden,
             export_rx: None,
+            last_threshold: 5.0,
+            restart_prompt: false,
         };
         if let Some(path) = initial_file {
             app.open_file(path);
@@ -81,8 +88,32 @@ impl App {
         app
     }
 
+    /// Load a file without starting analysis. Resets all transient state.
     pub fn open_file(&mut self, path: PathBuf) {
-        info!(path = %path.display(), "opening file");
+        info!(path = %path.display(), "file loaded");
+        self.file_path = Some(path);
+        self.frame_rx = None;
+        self.playing = false;
+        self.current_pts = 0.0;
+        self.texture = None;
+        self.error = None;
+        self.motion_analyzer.reset();
+        self.active_region = None;
+        self.analysis_rx = None;
+        self.final_region = None;
+        self.waiting_to_show_dialog = false;
+        self.crop_dialog = CropDialog::Hidden;
+        self.export_rx = None;
+        self.restart_prompt = false;
+    }
+
+    /// (Re-)start decoding + background analysis from the beginning.
+    fn start_trim(&mut self) {
+        let path = match &self.file_path {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        info!(path = %path.display(), threshold = self.variance_threshold, "starting trim");
 
         let (tx, rx) = mpsc::sync_channel(30);
         thread::spawn({
@@ -90,9 +121,8 @@ impl App {
             move || decode_video(path, tx)
         });
 
-        let analysis_rx = analyze_file_async(path.clone(), 4, self.variance_threshold);
+        let analysis_rx = analyze_file_async(path, 4, self.variance_threshold);
 
-        self.file_path = Some(path);
         self.frame_rx = Some(rx);
         self.playing = true;
         self.current_pts = 0.0;
@@ -105,15 +135,12 @@ impl App {
         self.waiting_to_show_dialog = false;
         self.crop_dialog = CropDialog::Hidden;
         self.export_rx = None;
+        self.last_threshold = self.variance_threshold;
+        self.restart_prompt = false;
     }
 
-    fn toggle_play_pause(&mut self) {
-        self.playing = !self.playing;
-        if self.playing {
-            info!(from_pts = self.current_pts, "playback resumed");
-        } else {
-            info!(at_pts = self.current_pts, "playback paused");
-        }
+    fn is_trimming(&self) -> bool {
+        self.playing || self.analysis_rx.is_some()
     }
 
     // ── Frame polling ────────────────────────────────────────────────────────
@@ -339,6 +366,43 @@ impl App {
             None => {}
         }
     }
+    fn show_restart_prompt(&mut self, ctx: &egui::Context) {
+        if !self.restart_prompt {
+            return;
+        }
+
+        let mut restart = false;
+        let mut keep = false;
+
+        egui::Window::new("Restart Analysis?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "Motion threshold changed to {:.1} MAD.",
+                    self.variance_threshold
+                ));
+                ui.label("Restart analysis from the beginning with the new value?");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Restart").clicked() {
+                        restart = true;
+                    }
+                    if ui.button("Keep going").clicked() {
+                        keep = true;
+                    }
+                });
+            });
+
+        if restart {
+            self.start_trim();
+        } else if keep {
+            // Don't prompt again unless the threshold changes again.
+            self.last_threshold = self.variance_threshold;
+            self.restart_prompt = false;
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -357,7 +421,16 @@ impl eframe::App for App {
             self.open_file(path);
         }
 
+        // Detect MAD threshold change while analysis is running.
+        if self.is_trimming()
+            && !self.restart_prompt
+            && (self.variance_threshold - self.last_threshold).abs() > f32::EPSILON
+        {
+            self.restart_prompt = true;
+        }
+
         self.show_crop_dialog(ctx);
+        self.show_restart_prompt(ctx);
 
         // ── Bottom control bar ───────────────────────────────────────────────
         egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
@@ -378,13 +451,8 @@ impl eframe::App for App {
                 }
 
                 ui.add_enabled_ui(self.file_path.is_some(), |ui| {
-                    let label = if self.playing {
-                        "⏸ Pause"
-                    } else {
-                        "▶ Play"
-                    };
-                    if ui.button(label).clicked() {
-                        self.toggle_play_pause();
+                    if ui.button("Trim Dead Region").clicked() {
+                        self.start_trim();
                     }
                 });
 
