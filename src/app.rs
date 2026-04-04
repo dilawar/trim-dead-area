@@ -394,16 +394,17 @@ impl App {
     // ── Crop dialog ──────────────────────────────────────────────────────────
 
     fn show_crop_dialog(&mut self, ctx: &egui::Context) {
-        if matches!(self.crop_dialog, CropDialog::Hidden) {
-            return;
-        }
+        let title = match &self.crop_dialog {
+            CropDialog::Hidden | CropDialog::Confirm { .. } => return,
+            CropDialog::NoRegion => "Analysis complete",
+            CropDialog::Exporting { .. } => "Exporting…",
+            CropDialog::Done { .. } => "Export complete",
+            CropDialog::Failed { .. } => "Export failed",
+        };
 
-        enum Action {
-            Dismiss,
-        }
-        let mut action: Option<Action> = None;
+        let mut dismiss = false;
 
-        egui::Window::new("Active Region Detected")
+        egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -414,46 +415,32 @@ impl App {
                     ui.label("Every block had motion below the threshold.\nTry lowering the Motion threshold and running again.");
                     ui.add_space(6.0);
                     if ui.button("Close").clicked() {
-                        action = Some(Action::Dismiss);
+                        dismiss = true;
                     }
                 }
-
-                CropDialog::Confirm { .. } => {
-                    // Save button is now in the bottom bar; nothing to show here.
-                }
-
                 CropDialog::Exporting { region, .. } => {
                     let [_, _, w, h] = *region;
-                    ui.label(format!("Exporting {w}×{h} crop…"));
-                    ui.small("Running ffmpeg — every frame is written to the output.");
+                    ui.label(format!("Writing {w}×{h} crop with ffmpeg…"));
                 }
-
                 CropDialog::Done { output } => {
-                    ui.label("Export complete!");
                     ui.monospace(output.display().to_string());
                     ui.add_space(4.0);
                     if ui.button("Close").clicked() {
-                        action = Some(Action::Dismiss);
+                        dismiss = true;
                     }
                 }
-
                 CropDialog::Failed { message } => {
-                    ui.colored_label(egui::Color32::RED, "Export failed:");
-                    ui.label(message);
+                    ui.colored_label(egui::Color32::RED, message);
                     ui.add_space(4.0);
                     if ui.button("Close").clicked() {
-                        action = Some(Action::Dismiss);
+                        dismiss = true;
                     }
                 }
-
-                CropDialog::Hidden => {}
+                CropDialog::Hidden | CropDialog::Confirm { .. } => {}
             });
 
-        match action {
-            Some(Action::Dismiss) => {
-                self.crop_dialog = CropDialog::Hidden;
-            }
-            None => {}
+        if dismiss {
+            self.crop_dialog = CropDialog::Hidden;
         }
     }
 
@@ -588,7 +575,7 @@ impl eframe::App for App {
                             }
                         }
                         _ => {
-                            if ui.button("▶ Play").clicked() {
+                            if ui.button("▶ Play Cropped").clicked() {
                                 self.start_preview();
                             }
                         }
