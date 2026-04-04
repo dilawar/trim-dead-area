@@ -10,16 +10,6 @@ https://youtu.be/
 
 [![Demo](https://img.youtube.com/vi/tFr4RkUZhgo/0.jpg)](https://www.youtube.com/watch?v=tFr4RkUZhgo)
 
-**Input:**
-
-[![Input video](https://img.youtube.com/vi/FgazIG0-tdc/0.jpg)](https://youtube.com/shorts/FgazIG0-tdc)
-
-**Output:**
-
-[![Output video](https://img.youtube.com/vi/5cEXwQvjqcI/0.jpg)](https://youtube.com/shorts/5cEXwQvjqcI)
-
----
-
 ## How it works
 
 1. **Open a video.** The first frame is shown immediately as a preview.
@@ -36,8 +26,6 @@ https://youtu.be/
 4. **Save the cropped video.** Confirm the dialog to choose an output path
    (pre-filled as `<original>_cropped.<ext>`). `ffmpeg` re-encodes the
    video with a `crop` filter; every frame is written, none are skipped.
-
----
 
 ## Installation
 
@@ -87,8 +75,6 @@ brew install ffmpeg
 # Windows — download from https://www.gyan.dev/ffmpeg/builds/
 # and add the bin/ folder to your PATH
 ```
-
----
 
 ## Usage
 
@@ -162,8 +148,6 @@ When playback finishes the **Active Region Detected** dialog opens:
 > The output is produced by `ffmpeg -vf crop=w:h:x:y -c:a copy`, so the
 > audio track is copied without re-encoding and video quality is determined
 > by the encoder defaults (libx264 for MP4).
-
----
 
 ## License
 
